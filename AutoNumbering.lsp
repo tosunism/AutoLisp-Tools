@@ -1,0 +1,183 @@
+(defun getTxt ( prStr / sampList src lay hgt sty content txtEnt quit)
+  (setq sampList nil)
+  (setq quit nil)
+  (while ( and (not sampList) (not quit))
+    (initget "U")
+    (setq src (entsel prStr))
+    (cond
+      ((null src) (princ "\nNo selection"))
+      ((= src "U")(setq quit T))
+      (T
+          (setq txtEnt (entget (car src)))
+          (if (= (cdr (assoc 0 txtEnt)) "TEXT")
+          (progn
+            (setq lay (cdr (assoc 8 txtEnt)))
+            (setq hgt (cdr (assoc 40 txtEnt)))
+            (setq sty (cdr (assoc 7 txtEnt)))
+            (setq content (cdr (assoc 1 txtEnt)))
+            (setq sampList (list lay hgt sty content txtEnt))
+          )
+          (princ "\nNot a TEXT object.")
+          )
+      )
+    )
+  )
+  (cond 
+    ((= src "U") src)
+    (sampList sampList)
+    (T (princ "\nCancelled.") nil)
+  )
+)
+
+(defun undo (mode numbered num / prevEntity prevContent)
+  (if numbered
+    (progn
+      (cond
+        ((= mode "standard")
+          (entdel (car numbered))      
+        )
+        ((= mode "text")
+          (setq prevEntity (entget (car (car numbered))))
+          (setq prevContent (cdr (car numbered)))
+          (entmod
+            (subst
+              (cons 1 prevContent) 
+              (assoc 1 prevEntity)
+              prevEntity
+            )
+          )
+        )
+        ((= mode "attribute")
+          (setq prevEntity (entget (car (car numbered))))
+          (setq prevContent (cdr (car numbered)))
+          (entmod
+            (subst
+              (cons 1 prevContent)
+              (assoc 1 prevEntity)
+              prevEntity
+            )
+          )
+        )
+      )
+      (setq numbered (cdr numbered))
+      (setq num (1- num))
+    )
+    (princ "\nNothing to undo.")
+  )
+  (list numbered num)
+)
+
+(defun numberObjects (mode / number numberedObjects sampleList target undoList source)
+  (cond 
+    ((member mode '("standard" "text"))    
+      (setq sampleList (getTxt "\nSelect the previous object"))
+      (if (= sampleList "U") (exit))
+      (setq number (1+ (atoi (nth 3 sampleList))))
+    )
+    ((= mode "attribute")
+      (setq source (nentselp "\nPick a block attribute [U]ndo <Esc to exit>: "))
+      (setq number (1+ (atoi (cdr (assoc 1 (entget (car source)))))))
+    )
+    
+  )
+  (setq numberedObjects nil)
+  (while T
+    (setq target (getTarget mode))
+    (cond
+      ((null target) (princ "\nNo selection"))
+      ((= target "U")
+        (setq undoList (undo mode numberedObjects number))
+        (setq numberedObjects (car undoList))
+        (setq number (cadr undoList))
+      )
+      (T
+        (cond
+          ((= mode "standard")
+            (progn
+              (entmake
+                (list
+                  (cons 0 "TEXT") ; quote
+                  (cons 8 (nth 0 sampleList))
+                  (cons 10 target)
+                  (cons 40 (nth 1 sampleList))
+                  (cons 1 (itoa number))
+                  (cons 7 (nth 2 sampleList))
+                )
+              )
+              (setq number (1+ number))
+              (setq numberedObjects (cons (entlast) numberedObjects))
+            )
+          )
+          ((= mode "text")
+            (entmod
+              (subst
+                (cons 1 (itoa number))
+                (assoc 1 (nth 4 target))
+                (nth 4 target)
+              )
+            )            
+            (setq number (1+ number))
+            (setq numberedObjects (cons (cons (cdr (assoc -1 (nth 4 target))) (nth 3 target)) numberedObjects))
+          )
+          ((= mode "attribute")
+            (setq attData (entget (car target)))
+            (if (= (cdr (assoc 0 attData)) "ATTRIB")
+              (progn
+                (setq numberedObjects
+                  (cons
+                    (cons (cdr (assoc -1 attData)) (cdr (assoc 1 attData)))
+                    numberedObjects
+                  )
+                )
+                (entmod
+                  (subst
+                    (cons 1 (itoa number))
+                    (assoc 1 attData)
+                    attData
+                  )
+                )
+                (setq number (1+ number))
+              )
+              (princ "\nWrong selection")              
+            )
+          )
+        )
+      )
+    )
+  )
+)
+
+(defun getTarget (mode / target)
+  (cond
+    ((= mode "standard")     
+      (initget "U")
+      (setq target (getpoint "\nClick to add [U]ndo <Esc to exit>: "))
+    )
+    ((= mode "text")
+      (setq target (getTxt "\nPick the object to number"))
+    )
+    ((= mode "attribute")
+      (initget "U")
+      (setq target (nentselp "\nPick a block attribute [U]ndo <Esc to exit>: "))
+    )
+  )
+)
+
+(defun c:numAuto ( / mode)
+  (initget "S T A")
+  (setq mode (getkword "\nSelect mode [S/T/A] <S>: "))
+  (if (null mode)
+    (setq mode "S")
+  )
+  (cond
+    ((= mode "S")
+      (numberObjects "standard")
+    )
+    ((= mode "T")
+      (numberObjects "text")
+    )
+    ((= mode "A")
+      (numberObjects "attribute")
+    )
+  )
+)
