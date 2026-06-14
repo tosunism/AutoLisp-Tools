@@ -26,19 +26,19 @@
 
 (defun addNumber ( / target)
   (if (null addMode)
-  (progn
-  (initget "T B")
-  (setq addMode (getkword "\nSelect adding mode [Text/Block] <Text>:"))
-  (if (null addMode)
-    (setq addMode "T")
+    (progn
+      (initget "T B")
+      (setq addMode (getkword "\nSelect adding mode [Text/Block] <Text>:"))
+      (if (null addMode)
+        (setq addMode "T")
+      )
+    )
   )
-  )
-  )
-  (cond
-    ((= addMode "T")
-      (if (null sample) (getSample "\nSelect a sample text"))
-      (while T
-        (setq target (getTarget))
+  (getSample)
+  (while T
+    (setq target (getTarget))
+    (cond
+      ((= addMode "T")
         (entmake
           (list
           (cons 0 "TEXT")
@@ -48,27 +48,36 @@
           (cons 1 (strcat prefix (itoa number)))
           (cons 7 (cdr (assoc 7 sample)))
           )
-        )
-        (setq number (1+ number))
+        )        
         (setq numbered (cons (entlast) numbered))
+        (setq number (1+ number))
       )
-    )
-    ((= addMode "B")
-      (getSample "\nSelect a sample block")
-      (while T
-        (setq target (getTarget))
-        (entmake
-          (list
-          (cons 0 "INSERT")
-          (cons 8 (cdr (assoc 8 sample)))
-          (cons 10 target)
-          (cons 40 (cdr (assoc 40 sample)))
-          (cons 1 (strcat prefix (itoa number)))
-          (cons 7 (cdr (assoc 7 sample)))
+      ((= addMode "B")
+        (setq bObj
+          (vlax-ename->vla-object
+            (cdr (assoc 330 sample))
+          )
+        )
+        (setq bName (vla-get-EffectiveName bObj))
+        (setq bRef
+          (vla-InsertBlock
+            ms
+            (vlax-3d-point target)
+            bName
+            (vla-get-XScaleFactor bObj)
+            (vla-get-YScaleFactor bObj)
+            (vla-get-ZScaleFactor bObj)
+            (vla-get-Rotation bObj)
+          )
+        )
+        (setAttribute bRef)
+        (setq numbered
+          (cons
+            (vlax-vla-object->ename bRef)
+            numbered
           )
         )
         (setq number (1+ number))
-        (setq numbered (cons (entlast) numbered))
       )
     )
   )
@@ -76,13 +85,13 @@
 
 (defun modifyNumber ( / target)
   (if (null modifyMode)
-  (progn
-  (initget "T B")
-  (setq modifyMode (getkword "\nSelect modify mode [Text/Block] <Text>:"))
-  (if (null modifyMode)
-    (setq modifyMode "T")
-  )
-  )
+    (progn
+      (initget "T B")
+      (setq modifyMode (getkword "\nSelect modify mode [Text/Block] <Text>:"))
+      (if (null modifyMode)
+        (setq modifyMode "T")
+      )
+    )
   )
   (while T
     (setq target (getTarget))
@@ -99,7 +108,7 @@
       ((= modifyMode "B")
         (entmod
           (subst
-            (cons 1 (strcat (itoa number)))
+            (cons 1 (strcat prefix (itoa number)))
             (assoc 1 target)
             target
           )
@@ -126,6 +135,15 @@
 (setq number 1)
 (setq numbered nil)
 (setq sample nil)
+(vl-load-com)
+(setq doc
+  (vla-get-ActiveDocument
+    (vlax-get-acad-object)
+  )
+)
+(setq ms
+  (vla-get-ModelSpace doc)
+)
 
 (defun c:numAuto ( / choice)
   (if mode
@@ -163,6 +181,20 @@
       )
     )
 )
+
+(defun setAttribute (blockRef / attrs attName)
+  (setq attrs (vlax-invoke blockRef 'GetAttributes)) ;'
+  (setq attName (cdr (assoc 2 sample)))
+  (foreach att attrs
+    (if (= (strcase (vla-get-TagString att))
+        (strcase attName))
+      (vla-put-TextString
+        att
+        (strcat prefix (itoa number))
+      )
+    )
+  )
+)
 (defun getTarget ( / target ent)
   (while (null target)
     (initget "U")
@@ -180,7 +212,7 @@
           )
         )
         ((= modifyMode "B")
-          (setq target (nentselp "\nPick a block attribute: "))
+          (setq target (nentsel "\nPick a block attribute: "))
         )
       )
     )
@@ -195,32 +227,37 @@
   target
 )
 
-(defun getSample (prStr / src)
+(defun getSample ( / src)
   (setq sample nil)
   (while (not sample)
-    (setq src (entsel prStr))
+    (cond 
+      ((= addMode "T") 
+        (setq src (entsel "\nSelect a sample text"))
+      )
+      ((= addMode "B") 
+        (setq src (nentsel "\nSelect a sample attributed block"))
+      )
+    )      
     (if src
       (progn
         (setq sample (entget (car src)))
         (cond
-        ((= modifyMode "T")
-        (if (/= (cdr (assoc 0 sample)) "TEXT")
-          (progn      
-            (princ "\nNot a text object")
-            (setq sample nil)
+          ((= addMode "T")
+            (if (/= (cdr (assoc 0 sample)) "TEXT")
+              (progn      
+                (princ "\nNot a text object")
+                (setq sample nil)
+              )
+            )
           )
-        )
-        )
-        ((= modifyMode "B")
-        (if (or 
-            (/= (cdr (assoc 0 sample)) "INSERT")
-            (/= (cdr (assoc 66 sample) ) 1))
-          (progn      
-            (princ "\nNot a block object")
-            (setq sample nil)
+          ((= addMode "B")
+            (if (/= (cdr (assoc 0 sample)) "ATTRIB")
+              (progn
+                (princ "\nNot an attribute object")
+                (setq sample nil)
+              )
+            )
           )
-        )
-        )
         )
       )
       (princ "\nNo selection")
