@@ -34,7 +34,9 @@
       )
     )
   )
-  (getSample)
+  (if (null sample)
+    (getSample)
+  )
   (while T
     (setq target (getTarget))
     (cond
@@ -45,7 +47,7 @@
           (cons 8 (cdr (assoc 8 sample)))
           (cons 10 target)
           (cons 40 (cdr (assoc 40 sample)))
-          (cons 1 (strcat prefix (itoa number)))
+          (cons 1 (strcat prefix (formatNumber number)))
           (cons 7 (cdr (assoc 7 sample)))
           )
         )        
@@ -99,7 +101,7 @@
       ((= modifyMode "T")
         (entmod
           (subst
-            (cons 1 (strcat prefix (itoa number)))
+            (cons 1 (strcat prefix (formatNumber number)))
             (assoc 1 target)
             target
           )
@@ -108,7 +110,7 @@
       ((= modifyMode "B")
         (entmod
           (subst
-            (cons 1 (strcat prefix (itoa number)))
+            (cons 1 (strcat prefix (formatNumber number)))
             (assoc 1 target)
             target
           )
@@ -133,6 +135,7 @@
 (setq addMode nil)
 (setq modifyMode nil)
 (setq number 1)
+(setq digits 0)
 (setq numbered nil)
 (setq sample nil)
 (vl-load-com)
@@ -149,37 +152,75 @@
   (if mode
     (progn
       (initget "S")
-      (setq choice (getkword "\nHit enter to continue or [S]ettings"))
-      (if (= choice "S") (setq mode nil))
+      (setq choice (strcase (getstring "\nHit enter to continue or [S]ettings")))
+      (if (= choice "S")
+        (progn
+          (changeSettings)
+          (setq mode nil
+            addMode nil
+            modifyMode nil
+            sample nil
+            digits nil
+          )
+        )
+      )
     )
   )
-  (if (not mode)  
-    (progn
-      (initget "A M P N")
-      (setq mode (getkword "\nSelect mode [Add/Modify/Prefix/Number] <Add>: "))
-      (if (null mode)
-        (setq mode "A")
-      )
+  (while (not mode)
+    (initget "A M S")
+    (setq mode (getkword "\nSelect mode [Add/Modify] or [S]ettings <Add>: "))
+    (if (null mode)
+      (setq mode "A")
+    )
+    (if (= mode "S")
+      (changeSettings)
+      (setq mode nil)
     )
   )
   (cond   
-      ((= mode "A")
-        (addNumber)
-      )
-      ((= mode "M")
-        (modifyNumber)
-      )
-      ((= mode "P")
-        (setq prefix (getstring "\nEnter the prefix or hit Enter to continue: "))
-        (setq mode nil)
-        (c:numAuto)
-      )
-      ((= mode "N")
-        (setq number (atoi (getstring "\nEnter the starting number")))
-        (setq mode nil)
-        (c:numAuto)
+    ((= mode "A")
+      (addNumber)
+    )
+    ((= mode "M")
+      (modifyNumber)
+    )
+  )
+)
+
+(defun changeSettings ( / choice)
+  (initget "N P")
+  (setq choice (getkword "\nSet number or prefix [Number/Prefix] <Number>: "))
+  (if (null choice)
+    (setq choice "N")
+  )
+  (cond
+    ((= choice "N")
+      (setq number (getstring "\nEnter the starting number"))
+      (setq digits (strlen number ))
+      (setq number (atoi number))
+      (setq mode nil)
+    )
+    ((= choice "P")
+      (setq prefix (getstring T "\nEnter the prefix or hit Enter to continue: "))
+      (setq mode nil)
+    )
+  )
+)
+
+(defun formatNumber (num / lenNum i diff )
+  (setq num (itoa num))
+  (setq lenNum (strlen num))
+  (if (< lenNum digits)
+    (progn
+      (setq diff (- digits lenNum))
+      (setq i 0)
+      (while (< i diff)
+        (setq num (strcat "0" num))
+        (setq i (1+ i))
       )
     )
+  )
+  num
 )
 
 (defun setAttribute (blockRef / attrs attName)
@@ -190,29 +231,42 @@
         (strcase attName))
       (vla-put-TextString
         att
-        (strcat prefix (itoa number))
+        (strcat prefix (formatNumber number))
       )
     )
   )
 )
+
 (defun getTarget ( / target ent)
   (while (null target)
     (initget "U")
     (if (= mode "A")  
-      (setq target (getpoint "\nClick to add [U]ndo <Esc to exit>: "))
-      (cond
-        ((= modifyMode "T")
-          (setq ent (entget (car (entsel "\nPick the text to number: "))))
-          (if (= (cdr (assoc 0 ent)) "TEXT")
-            (setq target ent) 
-            (progn
-              (princ "\nNot a text object")            
-              (setq target nil)
+      (setq target (getpoint "\nClick to add or [U]ndo <Esc to exit>: "))
+      (progn
+        (setq ent (getInput))
+        (if (= ent "U")
+          (setq target "U")
+          (progn
+            (setq target ent)
+            (cond
+              ((= modifyMode "T")
+                (if (/= (cdr (assoc 0 ent)) "TEXT")
+                  (progn
+                    (princ "\nNot a text object")            
+                    (setq target nil)
+                  )
+                )
+              )
+              ((= modifyMode "B")
+                (if (/= (cdr (assoc 0 ent)) "ATTRIB")
+                  (progn
+                    (princ "\nNot an attribute object")            
+                    (setq target nil)
+                  )
+                )
+              )
             )
           )
-        )
-        ((= modifyMode "B")
-          (setq target (nentsel "\nPick a block attribute: "))
         )
       )
     )
@@ -225,6 +279,21 @@
     )
   )
   target
+)
+
+(defun getInput ( / entity temp)
+  (while (not entity)
+    (initget "U")
+    (setq temp (nentsel "Pick the object to number or [U]ndo"))
+    (cond
+      ((listp temp)
+        (setq entity (entget (car temp)))
+      )
+      ((= temp "U")
+        (setq entity "U")
+      )
+    )
+  )
 )
 
 (defun getSample ( / src)
