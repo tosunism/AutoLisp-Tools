@@ -3,7 +3,8 @@
     (progn
       (cond
         ((= mode "A")
-          (entdel (car numbered))      
+          (entdel (caar numbered))
+          (setq lastPt (cadar numbered))
         )
         ((= mode "M")
           (setq prevEntity (entget (car (car numbered))))
@@ -17,7 +18,7 @@
           )
         )
       )
-      (setq numbered (cdr numbered))
+      (setq numbered (cdr numbered))      
       (setq number (1- number))
     )
     (princ "\nNothing to undo.")
@@ -43,16 +44,17 @@
       ((= addMode "T")
         (entmake
           (list
-          (cons 0 "TEXT")
-          (cons 8 (cdr (assoc 8 sample)))
-          (cons 10 target)
-          (cons 40 (cdr (assoc 40 sample)))
-          (cons 1 (strcat prefix (formatNumber number)))
-          (cons 7 (cdr (assoc 7 sample)))
+            (cons 0 "TEXT")
+            (cons 8 (cdr (assoc 8 sample)))
+            (cons 10 target)
+            (cons 40 (cdr (assoc 40 sample)))
+            (cons 1 (strcat prefix (formatNumber number) suffix))
+            (cons 7 (cdr (assoc 7 sample)))
           )
         )        
-        (setq numbered (cons (entlast) numbered))
-        (setq number (1+ number))
+        (setq number (+ number increment))
+        (setq numbered (cons (list (entlast) target) numbered))
+        (setq lastPt target)
       )
       ((= addMode "B")
         (setq bObj
@@ -73,13 +75,14 @@
           )
         )
         (setAttribute bRef)
+        (setq number (+ number increment))
+        (setq lastPt target)
         (setq numbered
           (cons
-            (vlax-vla-object->ename bRef)
+            (list (vlax-vla-object->ename bRef) lastPt)
             numbered
           )
         )
-        (setq number (1+ number))
       )
     )
   )
@@ -101,7 +104,7 @@
       ((= modifyMode "T")
         (entmod
           (subst
-            (cons 1 (strcat prefix (formatNumber number)))
+            (cons 1 (strcat prefix (formatNumber number) suffix))
             (assoc 1 target)
             target
           )
@@ -110,7 +113,7 @@
       ((= modifyMode "B")
         (entmod
           (subst
-            (cons 1 (strcat prefix (formatNumber number)))
+            (cons 1 (strcat prefix (formatNumber number) suffix))
             (assoc 1 target)
             target
           )
@@ -126,18 +129,21 @@
             numbered
           )
     )
-    (setq number (1+ number))
+    (setq number (+ number increment))
   )  
 )
 
 (setq prefix "")
+(setq suffix "")
 (setq mode nil)
 (setq addMode nil)
 (setq modifyMode nil)
 (setq number 1)
 (setq digits 0)
+(setq increment 1)
 (setq numbered nil)
 (setq sample nil)
+(setq lastPt nil)
 (vl-load-com)
 (setq doc
   (vla-get-ActiveDocument
@@ -147,34 +153,39 @@
 (setq ms
   (vla-get-ModelSpace doc)
 )
-
+(defun resetModes ()
+  (setq mode nil
+    addMode nil
+    modifyMode nil
+  )
+)
 (defun c:numAuto ( / choice)
+  (setq lastPt nil)
   (if mode
     (progn
       (initget "S")
       (setq choice (strcase (getstring "\nHit enter to continue or [S]ettings")))
       (if (= choice "S")
         (progn
+          (resetModes)
           (changeSettings)
-          (setq mode nil
-            addMode nil
-            modifyMode nil
-            sample nil
-            digits nil
-          )
         )
       )
     )
   )
   (while (not mode)
     (initget "A M S")
-    (setq mode (getkword "\nSelect mode [Add/Modify] or [S]ettings <Add>: "))
-    (if (null mode)
-      (setq mode "A")
-    )
-    (if (= mode "S")
-      (changeSettings)
-      (setq mode nil)
+    (setq mode (getkword "\nSelect mode [Add/Modify] or [S]ettings <Add>: "))    
+    (cond
+      ((null mode)
+        (setq mode "A")
+      )
+      ((= mode "S")
+        (progn
+          (changeSettings)
+          (resetModes)
+        )
+      )
     )
   )
   (cond   
@@ -188,21 +199,29 @@
 )
 
 (defun changeSettings ( / choice)
-  (initget "N P")
-  (setq choice (getkword "\nSet number or prefix [Number/Prefix] <Number>: "))
+  (initget "N P S I R")
+  (setq choice (getkword "\nSet number or prefix [Number/Prefix/Suffix/Increment/Reset Sample] <Number>: "))
   (if (null choice)
     (setq choice "N")
   )
   (cond
     ((= choice "N")
       (setq number (getstring "\nEnter the starting number"))
-      (setq digits (strlen number ))
+      (setq digits (strlen number))
       (setq number (atoi number))
-      (setq mode nil)
     )
     ((= choice "P")
       (setq prefix (getstring T "\nEnter the prefix or hit Enter to continue: "))
-      (setq mode nil)
+    )
+    ((= choice "S")
+      (setq suffix (getstring T "\nEnter the suffix or hit Enter to continue: "))
+    )
+    ((= choice "I")
+      (setq increment (getstring "\nEnter the increment value"))
+      (setq increment (atoi increment))
+    )
+    ((= choice "R")
+      (setq sample nil)
     )
   )
 )
@@ -224,24 +243,30 @@
 )
 
 (defun setAttribute (blockRef / attrs attName)
-  (setq attrs (vlax-invoke blockRef 'GetAttributes)) ;'
+  (setq attrs (vlax-invoke blockRef 'GetAttributes))
   (setq attName (cdr (assoc 2 sample)))
   (foreach att attrs
     (if (= (strcase (vla-get-TagString att))
         (strcase attName))
       (vla-put-TextString
         att
-        (strcat prefix (formatNumber number))
+        (strcat prefix (formatNumber number) suffix)
       )
     )
   )
 )
 
-(defun getTarget ( / target ent)
+(defun getTarget ( / target ent msg)
   (while (null target)
     (initget "U")
-    (if (= mode "A")  
-      (setq target (getpoint "\nClick to add or [U]ndo <Esc to exit>: "))
+    (if (= mode "A")
+      (progn
+        (setq msg "\nClick to add or [U]ndo <Esc to exit>: ")
+        (if lastPt
+          (setq target (getpoint lastPt msg))
+          (setq target (getpoint msg))
+        )
+      )
       (progn
         (setq ent (getInput))
         (if (= ent "U")
@@ -284,14 +309,15 @@
 (defun getInput ( / entity temp)
   (while (not entity)
     (initget "U")
-    (setq temp (nentsel "Pick the object to number or [U]ndo"))
+    (setq temp (nentsel "\nPick the object to number or [U]ndo"))    
     (cond
-      ((listp temp)
+      ((and (listp temp) (car temp))
         (setq entity (entget (car temp)))
       )
       ((= temp "U")
         (setq entity "U")
       )
+      ((null temp) (princ "\nNo selection"))
     )
   )
 )
@@ -301,7 +327,7 @@
   (while (not sample)
     (cond 
       ((= addMode "T") 
-        (setq src (entsel "\nSelect a sample text"))
+        (setq src (nentsel "\nSelect a sample text"))
       )
       ((= addMode "B") 
         (setq src (nentsel "\nSelect a sample attributed block"))
