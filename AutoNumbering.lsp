@@ -39,7 +39,7 @@
     (getSample)
   )
   (while T
-    (setq target (getTarget))
+    (setq target (trans (getTarget) 1 0))
     (cond
       ((= addMode "T")
         (entmake
@@ -54,7 +54,7 @@
         )        
         (setq number (+ number increment))
         (setq numbered (cons (list (entlast) target) numbered))
-        (setq lastPt target)
+        (setq lastPt (trans target 1 0))
       )
       ((= addMode "B")
         (setq bObj
@@ -76,7 +76,7 @@
         )
         (setAttribute bRef)
         (setq number (+ number increment))
-        (setq lastPt target)
+        (setq lastPt (trans target 1 0))
         (setq numbered
           (cons
             (list (vlax-vla-object->ename bRef) lastPt)
