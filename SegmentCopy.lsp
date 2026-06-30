@@ -1,8 +1,12 @@
-(defun c:SegCopy ( / sel entName pick matrix obj vindex p1 p2 param plist)
+
+(setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+
+(defun c:SgCopy ( / sel entName pick matrix obj vindex p1 p2 param plist)
   (vl-load-com)
+  (setq selSet (ssadd))
   (setq done nil)
   (while (not done)
-    (setq sel (nentselp "\nPick polyline segment: "))
+    (setq sel (nentselp "\nPick a line or polyline segment: "))
     (if sel 
       (progn
         (setq entName (car sel)
@@ -16,17 +20,21 @@
         
         (setq obj (vlax-ename->vla-object entName))  
         (setq objName (vla-get-ObjectName obj))
+        (setq bulge 0.0)
         ; Start-End Point extraction
         (cond
           ((= objName "AcDbLine")
             (setq p1 (vlax-curve-getstartpoint obj))
             (setq p2 (vlax-curve-getendpoint obj))
-
           )
           ((= objName "AcDbPolyline")
             (setq pointOnCurve (vlax-curve-getclosestpointto obj pick))
             (setq param (vlax-curve-getParamAtPoint obj pointOnCurve))
             (setq vindex (fix param))
+            (setq bulge (vla-GetBulge obj vindex))
+            (if (and matrix (MatrixMirroredP matrix))
+              (setq bulge (- bulge))
+            )
             (setq p1 (vlax-curve-getpointatparam obj vindex))
             (setq p2 (vlax-curve-getpointatparam obj (1+ vindex)))
           )
@@ -46,27 +54,17 @@
             (cons 90 2)
             (cons 70 0)
             (cons 10 p1)
+            (cons 42 bulge)
             (cons 10 p2)
           )
         )
-        (setq plist
-          (cons
-            (list (entlast) p1 p2)
-            plist
-          )
-        )      
+        (ssadd (entlast) selSet)
       )
       (progn        
-        (if plist
+        (if selSet
           (progn
-            ;; create final joined polylines
-            (foreach chain (ChainSegments plist)
-              (MakePline chain)
-            )
-            ;; remove preview polylines
-            (foreach seg plist
-              (entdel (car seg))
-            )
+            (sssetfirst nil selSet)
+            (vla-SendCommand doc "_.JOIN\n P \n")
           )
         )
         (setq done T)
@@ -152,122 +150,21 @@
   )
 )
 
-(defun SamePoint (a b /)
-  (equal a b 1e-3)
-)
+(defun MatrixMirroredP (mat / r0 r1 r2
+                            a b c d e f g h i det)
 
-(defun ChainSegments (segs / chains chain seg rest found)
-  
-  (while segs
+  (setq r0 (nth 0 mat)
+        r1 (nth 1 mat)
+        r2 (nth 2 mat))
 
-    ;; start a new chain with first remaining segment
-    (setq chain
-      (list
-        (cadr (car segs))
-        (caddr (car segs))
-      )
-    )
+  (setq a (nth 0 r0) b (nth 1 r0) c (nth 2 r0)
+        d (nth 0 r1) e (nth 1 r1) f (nth 2 r1)
+        g (nth 0 r2) h (nth 1 r2) i (nth 2 r2))
 
-    (setq segs (cdr segs))
-    (setq found T)
+  (setq det
+    (+ (* a (- (* e i) (* f h)))
+       (* (- b) (- (* d i) (* f g)))
+       (* c (- (* d h) (* e g)))))
 
-    ;; keep searching for connected segments
-    (while found
-
-      (setq found nil)
-      (setq rest segs)
-
-      (while rest
-
-        (setq seg (car rest))
-
-        (cond
-
-          ;; connect to chain end
-          ((SamePoint (car (last chain))
-                      (cadr seg))
-
-            (setq chain
-              (append chain (list (caddr seg)))
-            )
-
-            (setq segs (vl-remove seg segs))
-            (setq found T)
-          )
-
-
-          ;; reversed segment connects to chain end
-          ((SamePoint (car (last chain))
-                      (caddr seg))
-
-            (setq chain
-              (append chain (list (cadr seg)))
-            )
-
-            (setq segs (vl-remove seg segs))
-            (setq found T)
-          )
-
-
-          ;; connect to chain start
-          ((SamePoint (car chain)
-                      (caddr seg))
-
-            (setq chain
-              (cons (cadr seg) chain)
-            )
-
-            (setq segs (vl-remove seg segs))
-            (setq found T)
-          )
-
-
-          ;; reversed segment connects to chain start
-          ((SamePoint (car chain)
-                      (cadr seg))
-
-            (setq chain
-              (cons (caddr seg) chain)
-            )
-
-            (setq segs (vl-remove seg segs))
-            (setq found T)
-          )
-        )
-
-        (setq rest (cdr rest))
-      )
-    )
-
-    ;; save completed chain
-    (setq chains
-      (cons chain chains)
-    )
-  )
-
-  chains
-)
-
-(defun MakePline (pts / data)
-  (setq data
-    (list
-      '(0 . "LWPOLYLINE")
-      '(100 . "AcDbEntity")
-      '(100 . "AcDbPolyline")
-      (cons 90 (length pts))
-      '(70 . 0)
-    )
-  )
-
-  (foreach p pts
-    (setq data
-      (append data
-        (list
-          (cons 10 (list (car p) (cadr p)))
-        )
-      )
-    )
-  )
-
-  (entmake data)
+  (< det 0.0)
 )
