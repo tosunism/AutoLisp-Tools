@@ -1,11 +1,20 @@
-
 (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+(vl-load-com)
 
-(defun c:SgCopy ( / sel entName pick matrix obj vindex p1 p2 param plist)
-  (vl-load-com)
+(defun c:SgCopy ( / sel entName pick matrix obj objName vindex p1 p2 param plist selSet)
   (setq selSet (ssadd))
-  (setq done nil)
-  (while (not done)
+  (defun *error* (msg)
+    (if (= msg "Function cancelled")
+      (if (> (sslength selSet) 1)
+        (progn
+          (sssetfirst nil selSet)
+          (vla-SendCommand doc "_.JOIN\n")
+        )
+      )
+    )
+    (princ)
+  )
+  (while T
     (setq sel (nentselp "\nPick a line or polyline segment: "))
     (if sel 
       (progn
@@ -13,11 +22,10 @@
               pick (cadr sel)
               matrix (caddr sel)
         )
-        (setq pick (trans pick 1 0))      
+        (setq pick (trans pick 1 0))
         (if matrix
           (setq pick (MatrixInverseTransformPoint pick matrix))
         )
-        
         (setq obj (vlax-ename->vla-object entName))  
         (setq objName (vla-get-ObjectName obj))
         (setq bulge 0.0)
@@ -61,13 +69,7 @@
         (ssadd (entlast) selSet)
       )
       (progn        
-        (if selSet
-          (progn
-            (sssetfirst nil selSet)
-            (vla-SendCommand doc "_.JOIN\n P \n")
-          )
-        )
-        (setq done T)
+        (princ "\nNo selection")
       )
     )    
   )
