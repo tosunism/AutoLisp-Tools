@@ -9,14 +9,33 @@
 (setq AttBlockName nil) ; name of the block that contains the attributes
 (setq PLayer nil)
 
-(defun changeSettings ( / attEnt attBlock)
+(defun changeSettings ( / attEnt attBlock layer layerDone)
   (setq attEnt (entget (car (nentsel "\nSelect the area attribute"))))
-  (setq PLayer (cdr (assoc 8 (entget (car (nentsel "\nSelect the area polyline"))))))
+  (setq PLayer (getPlayerList))
   (setq ArAttName (cdr (assoc 2 attEnt)))
   (setq attBlock (cdr (assoc 330 attEnt)))
   (setq AttBlockName (vla-get-effectivename (vlax-ename->vla-object attBlock)))
 )
-
+(defun getPlayerList ( / ent entLst done item sel)
+  (setq entLst nil)
+  (while (not done)
+    (if (setq sel (car (nentsel "\nSelect the area polyline layers <Enter to finish>: ")))
+      (progn
+        (setq ent (entget sel))
+        (if (= (cdr (assoc 0 ent)) "LWPOLYLINE")
+          (progn
+            (setq item (cdr (assoc 8 ent)))
+            (if (not (member (strcase item) entLst))
+              (setq entLst (cons (strcase item) entLst))
+            )
+          )
+        )
+      )
+      (setq done T)
+    )
+  )
+  entLst
+)
 (defun c:AddAreaField ( / selSet entPol points i j afield blockSS block blockObj found srcBkSS choice sNam)
   (if (not ArAttName)
     (changeSettings)
@@ -33,35 +52,50 @@
   (repeat (sslength selSet)
     (setq sNam (ssname selSet i))
     (setq entPol (entget sNam))
-    (if (= (cdr (assoc 8 entPol)) PLayer)
+    (if PLayer
       (progn
-        (setq afield (GetAreaField (vlax-ename->vla-object sNam)))
-        (setq points (GetPolylineVertices sNam))
-        (setq blockSS (ssget "_WP" points '((0 . "INSERT"))));'
-        (if blockSS
+        (if (member (strcase (cdr (assoc 8 entPol))) PLayer)
           (progn
-            (setq j 0)
-            (setq found nil)
-            (while (and (< j (sslength blockSS)) (not found))
-              (setq block (ssname blockSS j))
-              (setq blockObj (vlax-ename->vla-object block))
-              (if (= (vla-get-effectivename blockObj) AttBlockName)
-                (progn
-                  (setq found T)
-                  (ssadd block srcBkSS)
-                  (putFieldToAttribute block ArAttName afield)
-                )
-              )
-              (setq j (1+ j))
-            )
+            (addPlineFldToAtt sNam srcBkSS)
           )
         )
       )
+      (addPlineFldToAtt sNam srcBkSS)      
+    )
+    (if (or 
+          (null PLayer)
+          (member (strcase (cdr (assoc 8 entPol))) PLayer)
+        )
+      (addPlineFldToAtt sNam srcBkSS)
     )
     (setq i (1+ i))
   )
   (command "_.UPDATEFIELD" srcBkSS "")
   (princ)
+)
+
+(defun addPlineFldToAtt (pline srcBkSS / afield points blockSS block blockObj found j)
+  (setq afield (GetAreaField (vlax-ename->vla-object pline)))
+  (setq points (GetPolylineVertices pline))
+  (setq blockSS (ssget "_WP" points '((0 . "INSERT"))));'
+  (if blockSS
+    (progn
+      (setq j 0)
+      (setq found nil)
+      (while (and (< j (sslength blockSS)) (not found))
+        (setq block (ssname blockSS j))
+        (setq blockObj (vlax-ename->vla-object block))
+        (if (= (vla-get-effectivename blockObj) AttBlockName)
+          (progn
+            (setq found T)
+            (ssadd block srcBkSS)
+            (putFieldToAttribute block ArAttName afield)
+          )
+        )
+        (setq j (1+ j))
+      )
+    )
+  )
 )
 
 (defun GetPolylineVertices (ent / lst pts)
@@ -104,33 +138,56 @@
 (setq AtNamToCp nil)  ; attribute name to copy e.g. area attribute
 (setq CpAttBlockName nil)  ; name of the block that contains the attributes
 
-(defun c:CopyFldToAtts ( / fld attObj stag bkSet tBkNam i sBkNam)
-  (if 
-    (and
-      (setq sBkNam (car (nentsel "\nSelect a source attribute to copy from")))
-      (= "ATTRIB" (cdr (assoc 0 (entget sBkNam))))
-      (setq fld (LM:fieldcode sBkNam))
-    )
+(defun c:CopyAttributeContents ( / attEnt attLst bkSet tBkNam fld i)
+  (setq attLst (getEntList))
+  (if attLst
     (progn
-      (setq attObj (vlax-ename->vla-object sBkNam))
-      (setq stag (strcase (vla-get-tagstring attObj)))
-      (princ "\nSelect target blocks to copy to")    
+      (princ "\nSelect target blocks to copy to")
       (setq bkSet (ssget '((0 . "INSERT")))) ;'
-      (if bkSet  
+      (if bkSet
         (progn
           (setq i 0)
           (repeat (sslength bkSet)
             (setq tBkNam (ssname bkSet i))
-            (putFieldToAttribute tBkNam stag fld)
+            (foreach attEnt attLst
+              (setq tag (cdr (assoc 2 (entget attEnt))))
+              (if (setq fld (LM:fieldcode attEnt))
+                (putFieldToAttribute tBkNam tag fld)
+                (putFieldToAttribute
+                  tBkNam
+                  tag
+                  (vla-get-TextString (vlax-ename->vla-object attEnt))
+                )
+              )
+            )
             (setq i (1+ i))
           )
-          (command "_.UPDATEFIELD" bkSet "")          
+          (command "_.UPDATEFIELD" bkSet "")
         )
       )
     )
+  )  
+)
+
+(defun getEntList ( / ent entLst done item sel)
+  (setq entLst nil)
+  (while (not done)
+    (if (setq sel (car (nentsel "\nSelect the source attributes to copy <Enter to finish>: ")))
+      (progn
+        (setq ent (entget sel))
+        (if (= (cdr (assoc 0 ent)) "ATTRIB")
+          (progn
+            (setq item sel)
+            (if (not (member item entLst))
+              (setq entLst (cons item entLst))
+            )
+          )
+        )
+      )
+      (setq done T)
+    )
   )
-  (prompt "\nNot a fielded attribute")
-  (princ)
+  entLst
 )
 
 (defun c:CopyBlockAttValues ( / sBkNam valMap)
