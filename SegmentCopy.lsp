@@ -1,80 +1,85 @@
 (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
 (vl-load-com)
 
-(defun c:SgCopy ( / sel entName pick matrix obj objName vindex p1 p2 param plist selSet)
-  (setq selSet (ssadd))
-  (defun *error* (msg)
-    (if (= msg "Function cancelled")
-      (if (> (sslength selSet) 1)
-        (progn
-          (sssetfirst nil selSet)
-          (vla-SendCommand doc "_.JOIN\n")
+(defun c:SgCopy (  / sel entName pick matrix obj objName vindex p1 p2 param plist selSet)  
+  (setq selSet (ssadd))  
+  (while (setq sel (nentselp "\nPick a segment <Enter to finish>: "))
+    (setq entName (car sel)
+          pick (cadr sel)
+          matrix (caddr sel)
+    )
+    (setq pick (trans pick 1 0))
+    (if matrix
+      (setq pick (MatrixInverseTransformPoint pick matrix))
+    )
+    (setq obj (vlax-ename->vla-object entName))  
+    (setq objName (vla-get-ObjectName obj))
+    (setq bulge 0.0)
+    ; Start-End Point extraction
+    (cond
+      ((= objName "AcDbLine")
+        (setq p1 (vlax-curve-getstartpoint obj))
+        (setq p2 (vlax-curve-getendpoint obj))
+      )
+      ((= objName "AcDbPolyline")
+        (setq pointOnCurve (vlax-curve-getclosestpointto obj pick))
+        (setq param (vlax-curve-getParamAtPoint obj pointOnCurve))
+        (setq vindex (fix param))
+        (setq bulge (vla-GetBulge obj vindex))
+        (if (and matrix (MatrixMirroredP matrix))
+          (setq bulge (- bulge))
         )
+        (setq p1 (vlax-curve-getpointatparam obj vindex))
+        (setq p2 (vlax-curve-getpointatparam obj (1+ vindex)))
       )
     )
-    (princ)
-  )
-  (while T
-    (setq sel (nentselp "\nPick a line or polyline segment: "))
-    (if sel 
+    (if matrix
       (progn
-        (setq entName (car sel)
-              pick (cadr sel)
-              matrix (caddr sel)
-        )
-        (setq pick (trans pick 1 0))
-        (if matrix
-          (setq pick (MatrixInverseTransformPoint pick matrix))
-        )
-        (setq obj (vlax-ename->vla-object entName))  
-        (setq objName (vla-get-ObjectName obj))
-        (setq bulge 0.0)
-        ; Start-End Point extraction
-        (cond
-          ((= objName "AcDbLine")
-            (setq p1 (vlax-curve-getstartpoint obj))
-            (setq p2 (vlax-curve-getendpoint obj))
-          )
-          ((= objName "AcDbPolyline")
-            (setq pointOnCurve (vlax-curve-getclosestpointto obj pick))
-            (setq param (vlax-curve-getParamAtPoint obj pointOnCurve))
-            (setq vindex (fix param))
-            (setq bulge (vla-GetBulge obj vindex))
-            (if (and matrix (MatrixMirroredP matrix))
-              (setq bulge (- bulge))
-            )
-            (setq p1 (vlax-curve-getpointatparam obj vindex))
-            (setq p2 (vlax-curve-getpointatparam obj (1+ vindex)))
-          )
-        )
-        (if matrix
-          (progn
-            (setq p1 (MatrixTransformPoint p1 matrix))
-            (setq p2 (MatrixTransformPoint p2 matrix))
-          )
-        )
-        ; Object creation 
-        (entmake
-          (list
-            (cons 0 "LWPOLYLINE")
-            (cons 100 "AcDbEntity")
-            (cons 100 "AcDbPolyline")
-            (cons 90 2)
-            (cons 70 0)
-            (cons 10 p1)
-            (cons 42 bulge)
-            (cons 10 p2)
-          )
-        )
-        (ssadd (entlast) selSet)
+        (setq p1 (MatrixTransformPoint p1 matrix))
+        (setq p2 (MatrixTransformPoint p2 matrix))
       )
-      (progn        
-        (princ "\nNo selection")
+    )
+    ; Object creation 
+    (entmake
+      (list
+        (cons 0 "LWPOLYLINE")
+        (cons 100 "AcDbEntity")
+        (cons 100 "AcDbPolyline")
+        (cons 90 2)
+        (cons 70 0)
+        (cons 10 p1)
+        (cons 42 bulge)
+        (cons 10 p2)
       )
-    )    
+    )
+    (ssadd (entlast) selSet)        
+  )
+  (if (> (sslength selSet) 0)
+    (progn
+      (sssetfirst nil selSet)
+      (if (> (sslength selSet) 1)
+        (vla-SendCommand
+          doc
+          "_.JOIN\nOffsetJoined\n"
+        )
+        (vla-SendCommand
+          doc
+          "offsetJoined\n"
+        )
+      )      
+    )
   )
   (princ)
 )
+
+(defun c:offsetJoined (  / ent ss )
+  (setq ss (ssadd))
+  (setq ent (entlast))
+  (ssadd ent ss)
+  (sssetfirst nil ss)
+  (vla-SendCommand doc "_.OFFSET\nE\nY\n")
+)
+
 
 ; MCS → WCS
 (defun MatrixTransformPoint (pt mat / r0 r1 r2 x y z)
