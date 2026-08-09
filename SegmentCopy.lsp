@@ -64,11 +64,11 @@
         )
         (vla-SendCommand
           doc
-          "offsetJoined\n"
-        )
-      )      
+          "offsetJoined\n"          
+        )        
+      )    
     )
-  )
+  )  
   (princ)
 )
 
@@ -77,9 +77,8 @@
   (setq ent (entlast))
   (ssadd ent ss)
   (sssetfirst nil ss)
-  (vla-SendCommand doc "_.OFFSET\nE\nY\n")
+  (vla-SendCommand doc "_.OFFSET\nE\nY\nT\n")
 )
-
 
 ; MCS → WCS
 (defun MatrixTransformPoint (pt mat / r0 r1 r2 x y z)
