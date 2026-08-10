@@ -21,18 +21,12 @@
   (setq ent2 (entsel "\nSelect an object to align to"))
 
   (if ent2
-    (progn
-      (setq pt2 (osnap (cadr ent2) "_nea"))
-      (setq pt4 (osnap (cadr ent2) "_end"))
-
+    (progn      
       (setq ent1 (nentsel "\nSelect an object to align"))
 
       (if ent1
         (progn
           (setq ss (ssadd))
-
-          (setq pt1 (osnap (cadr ent1) "_end"))
-          (setq pt3 (osnap (cadr ent1) "_nea"))
 
           ;; ------------------------------------------------------
           ;; Get parent
@@ -47,12 +41,44 @@
           )
           (ssadd parent ss)
 
-          ;; ------------------------------------------------------
-          ;; Calculate directions
-          ;; ------------------------------------------------------
+        ;; ------------------------------------------------------------
+        ;; Get points
+        ;; ------------------------------------------------------------
 
-          (setq ang1 (angle pt1 pt3))
-          (setq ang2 (angle pt2 pt4))
+        (setq pt1 (osnap (cadr ent1) "_end"))
+        (setq pt3 (osnap (cadr ent1) "_nea"))
+        (setq pt2 (osnap (cadr ent2) "_nea"))
+        (setq pt4 (osnap (cadr ent2) "_end"))
+
+        ;; ------------------------------------------------------------
+        ;; Calculate direction vectors
+        ;; ------------------------------------------------------------
+
+        (setq dx1 (- (car pt3) (car pt1)))
+        (setq dy1 (- (cadr pt3) (cadr pt1)))
+
+        (setq dx2 (- (car pt4) (car pt2)))
+        (setq dy2 (- (cadr pt4) (cadr pt2)))
+
+        ;; ------------------------------------------------------------
+        ;; Ensure both point pairs have the same direction.
+        ;; If they point opposite ways, reverse the target pair.
+        ;; ------------------------------------------------------------
+
+        (if (< (+ (* dx1 dx2) (* dy1 dy2)) 0.0)
+          (progn
+            (setq temp pt2)
+            (setq pt2 pt4)
+            (setq pt4 temp)
+          )
+        )
+
+        ;; ------------------------------------------------------------
+        ;; Calculate directions
+        ;; ------------------------------------------------------------
+
+        (setq ang1 (angle pt1 pt3))
+        (setq ang2 (angle pt2 pt4))
                  
           (setq parallel
             (<
