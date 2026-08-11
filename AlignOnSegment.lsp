@@ -5,11 +5,7 @@
      ang1 ang2
      tol
      parallel
-     horizontal
-     ux uy
      dx dy
-     along
-     moveX moveY
      perp dist)
 
   (setq tol 1e-3)
