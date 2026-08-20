@@ -6,7 +6,7 @@
      tol
      parallel
      dx dy
-     perp dist)
+     perp dist srcPts tarPts)
 
   (setq tol 1e-3)
 
@@ -14,11 +14,11 @@
   ;; Select target object
   ;; ------------------------------------------------------------
 
-  (setq ent2 (entsel "\nSelect an object to align to"))
+  (setq ent2 (nentselp "\nSelect an object to align to"))
 
   (if ent2
     (progn      
-      (setq ent1 (nentsel "\nSelect an object to align"))
+      (setq ent1 (nentselp "\nSelect an object to align"))
 
       (if ent1
         (progn
@@ -36,15 +36,15 @@
             (setq parent (car ent1))
           )
           (ssadd parent ss)
-
         ;; ------------------------------------------------------------
         ;; Get points
         ;; ------------------------------------------------------------
-
-        (setq pt1 (osnap (cadr ent1) "_end"))
-        (setq pt3 (osnap (cadr ent1) "_nea"))
-        (setq pt2 (osnap (cadr ent2) "_nea"))
-        (setq pt4 (osnap (cadr ent2) "_end"))
+        (setq srcPts (getSegmentPoints ent1))
+        (setq tarPts (getSegmentPoints ent2))
+        (setq pt1 (car srcPts))
+        (setq pt2 (car tarPts))
+        (setq pt3 (cadr srcPts))
+        (setq pt4 (cadr tarPts))
 
         ;; ------------------------------------------------------------
         ;; Calculate direction vectors
@@ -183,4 +183,189 @@
     )
   )
   (princ)
+)
+
+(defun getSegmentPoints ( sel /  entName pick matrix obj objName bulge p1 p2 pointOnCurve param vindex)
+  (setq entName (car sel)
+        pick (cadr sel)
+        matrix (caddr sel))
+  (setq pick (trans pick 1 0))
+  (if matrix
+    (setq pick (MatrixInverseTransformPoint pick matrix))
+  )
+  
+  (setq obj     (vlax-ename->vla-object entName)
+        objName (vla-get-ObjectName obj)
+        bulge   0.0)
+  (cond
+    ((= objName "AcDbLine")
+      (setq p1 (vlax-curve-getstartpoint obj)
+            p2 (vlax-curve-getendpoint obj)) 
+    )
+    ((= objName "AcDbXLine")
+    
+    )
+    ((= objName "AcDbPolyline")
+      (setq pointOnCurve
+               (vlax-curve-getclosestpointto obj pick))
+
+        (setq param
+               (vlax-curve-getParamAtPoint obj pointOnCurve))
+
+        (setq vindex (fix param))
+
+        (setq bulge
+               (vla-GetBulge obj vindex))
+
+        (if (and matrix (MatrixMirroredP matrix))
+          (setq bulge (- bulge))
+        )
+
+        (setq p1
+               (vlax-curve-getPointAtParam obj vindex))
+
+        (setq p2
+               (vlax-curve-getPointAtParam obj (1+ vindex)))
+    )
+  )
+  (if matrix
+    (progn
+      (setq p1 (MatrixTransformPoint p1 matrix))
+      (setq p2 (MatrixTransformPoint p2 matrix))
+    )
+  )
+  (list p1 p2 vindex bulge entName)
+)
+
+(defun SetPolylineVertices
+  (obj vindex1 pt1 pt2 / coords i1 i2 arr vindex2)
+  (setq vindex2 (1+ vindex1))
+  (setq coords
+    (vlax-safearray->list
+      (vlax-variant-value
+        (vla-get-Coordinates obj)
+      )
+    )
+  )
+
+  (setq i1 (* 2 vindex1))
+  (setq i2 (* 2 vindex2))
+
+  (setq coords
+    (subst (car pt1) (nth i1 coords) coords)
+  )
+  (setq coords
+    (subst (cadr pt1) (nth (1+ i1) coords) coords)
+  )
+  (setq coords
+    (subst (car pt2) (nth i2 coords) coords)
+  )
+  (setq coords
+    (subst (cadr pt2) (nth (1+ i2) coords) coords)
+  )
+
+  (setq arr
+    (vlax-make-safearray
+      vlax-vbDouble
+      (cons 0 (1- (length coords)))
+    )
+  )
+  (vlax-safearray-fill arr coords)
+
+  (vla-put-Coordinates obj arr)
+)
+
+; MCS → WCS
+(defun MatrixTransformPoint (pt mat / r0 r1 r2 x y z)
+  (setq r0 (nth 0 mat)
+        r1 (nth 1 mat)
+        r2 (nth 2 mat)
+        x  (car pt)
+        y  (cadr pt)
+        z  (cond ((caddr pt)) (0.0)))
+
+  (list
+    (+ (* x (nth 0 r0)) (* y (nth 1 r0)) (* z (nth 2 r0)) (nth 3 r0))
+    (+ (* x (nth 0 r1)) (* y (nth 1 r1)) (* z (nth 2 r1)) (nth 3 r1))
+    (+ (* x (nth 0 r2)) (* y (nth 1 r2)) (* z (nth 2 r2)) (nth 3 r2))
+  )
+)
+
+; WCS → MCS
+(defun MatrixInverseTransformPoint (pt mat / r0 r1 r2
+                                       a b c d e f g h i
+                                       tx ty tz
+                                       det
+                                       inv00 inv01 inv02
+                                       inv10 inv11 inv12
+                                       inv20 inv21 inv22
+                                       px py pz)
+
+  (setq r0 (nth 0 mat)
+        r1 (nth 1 mat)
+        r2 (nth 2 mat))
+
+  ;; Linear part
+  (setq a (nth 0 r0)  b (nth 1 r0)  c (nth 2 r0)
+        d (nth 0 r1)  e (nth 1 r1)  f (nth 2 r1)
+        g (nth 0 r2)  h (nth 1 r2)  i (nth 2 r2))
+
+  ;; Translation
+  (setq tx (nth 3 r0)
+        ty (nth 3 r1)
+        tz (nth 3 r2))
+
+  ;; Remove translation
+  (setq px (- (car pt) tx)
+        py (- (cadr pt) ty)
+        pz (- (if (caddr pt) (caddr pt) 0.0) tz))
+
+  ;; Determinant
+  (setq det
+    (+ (* a (- (* e i) (* f h)))
+       (* (- b) (- (* d i) (* f g)))
+       (* c (- (* d h) (* e g)))))
+
+  (if (equal det 0.0 1e-12)
+    nil
+    (progn
+      ;; Inverse 3×3
+      (setq inv00 (/ (- (* e i) (* f h)) det)
+            inv01 (/ (- (* c h) (* b i)) det)
+            inv02 (/ (- (* b f) (* c e)) det)
+
+            inv10 (/ (- (* f g) (* d i)) det)
+            inv11 (/ (- (* a i) (* c g)) det)
+            inv12 (/ (- (* c d) (* a f)) det)
+
+            inv20 (/ (- (* d h) (* e g)) det)
+            inv21 (/ (- (* b g) (* a h)) det)
+            inv22 (/ (- (* a e) (* b d)) det))
+
+      (list
+        (+ (* px inv00) (* py inv01) (* pz inv02))
+        (+ (* px inv10) (* py inv11) (* pz inv12))
+        (+ (* px inv20) (* py inv21) (* pz inv22))
+      )
+    )
+  )
+)
+
+(defun MatrixMirroredP (mat / r0 r1 r2
+                            a b c d e f g h i det)
+
+  (setq r0 (nth 0 mat)
+        r1 (nth 1 mat)
+        r2 (nth 2 mat))
+
+  (setq a (nth 0 r0) b (nth 1 r0) c (nth 2 r0)
+        d (nth 0 r1) e (nth 1 r1) f (nth 2 r1)
+        g (nth 0 r2) h (nth 1 r2) i (nth 2 r2))
+
+  (setq det
+    (+ (* a (- (* e i) (* f h)))
+       (* (- b) (- (* d i) (* f g)))
+       (* c (- (* d h) (* e g)))))
+
+  (< det 0.0)
 )
