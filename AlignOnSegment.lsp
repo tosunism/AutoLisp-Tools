@@ -207,10 +207,6 @@
       (setq dir (cdr (assoc 11 ed)))
       (setq p1 (vlax-curve-getClosestPointTo obj pick))
       (setq p2 (mapcar '+ p1 dir))
-      (princ "\nPoint 1: ")
-      (princ p1)
-      (princ "\nPoint 2: ")
-      (princ p2)
     )
     ((= objName "AcDbPolyline")
       (setq pointOnCurve
