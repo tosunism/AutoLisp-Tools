@@ -3,68 +3,15 @@
 
 (setq joinedEnt nil)
 (setq *SgCopyOffsetReactor* nil)
+(setq tol (* 0.01 (/ pi 180.0)))
 
-
-(defun c:SgCopy ( / sel entName pick matrix obj objName
-                    vindex p1 p2 param pointOnCurve
-                    bulge selSet )
-
+(defun c:SgCopy ( / sel p1 p2 selSet seg)
   (setq selSet (ssadd))
-
   (while (setq sel (nentselp "\nPick a segment : "))
-
-    (setq entName (car sel)
-          pick    (cadr sel)
-          matrix  (caddr sel))
-
-    (setq pick (trans pick 1 0))
-
-    (if matrix
-      (setq pick (MatrixInverseTransformPoint pick matrix))
-    )
-
-    (setq obj     (vlax-ename->vla-object entName)
-          objName (vla-get-ObjectName obj)
-          bulge   0.0)
-
-    ;; Start-End Point extraction
-    (cond
-      ((= objName "AcDbLine")
-        (setq p1 (vlax-curve-getstartpoint obj)
-              p2 (vlax-curve-getendpoint obj))
-      )
-
-      ((= objName "AcDbPolyline")
-        (setq pointOnCurve
-               (vlax-curve-getclosestpointto obj pick))
-
-        (setq param
-               (vlax-curve-getParamAtPoint obj pointOnCurve))
-
-        (setq vindex (fix param))
-
-        (setq bulge
-               (vla-GetBulge obj vindex))
-
-        (if (and matrix (MatrixMirroredP matrix))
-          (setq bulge (- bulge))
-        )
-
-        (setq p1
-               (vlax-curve-getPointAtParam obj vindex))
-
-        (setq p2
-               (vlax-curve-getPointAtParam obj (1+ vindex)))
-      )
-    )
-
-    ;; MCS -> WCS
-    (if matrix
-      (progn
-        (setq p1 (MatrixTransformPoint p1 matrix))
-        (setq p2 (MatrixTransformPoint p2 matrix))
-      )
-    )
+    (setq seg   (getSegmentPoints sel)
+          p1    (car seg)
+          p2    (cadr seg)
+          bulge (cadddr seg))
 
     ;; Create copied segment
     (entmake
@@ -79,26 +26,16 @@
         (cons 10 p2)
       )
     )
-
     (ssadd (entlast) selSet)
   )
-
-  ;; ----------------------------------------------------------
-  ;; Start JOIN / OFFSET
-  ;; ----------------------------------------------------------
-
   (if (> (sslength selSet) 0)
     (progn
-
       (sssetfirst nil selSet)
-
       (if (> (sslength selSet) 1)
-
         (vla-SendCommand
           doc
           "_.JOIN\nOffsetJoined\n"
         )
-
         (vla-SendCommand
           doc
           "OffsetJoined\n"
@@ -106,7 +43,6 @@
       )
     )
   )
-
   (princ)
 )
 
@@ -147,7 +83,7 @@
       (setq *SgCopyOffsetReactor*
         (vlr-command-reactor
           nil
-          '((:vlr-commandEnded . SgCopy-OffsetEnded))
+          '((:vlr-commandEnded . SgCopy-OffsetEnded)) ;'
         )
       )
 
@@ -165,6 +101,87 @@
   (princ)
 )
 
+(defun getSegmentPoints ( sel /  entName pick matrix obj objName bulge p1 p2 pointOnCurve param vindex)
+  (setq entName (car sel)
+        pick (cadr sel)
+        matrix (caddr sel))
+  (setq pick (trans pick 1 0))
+  (if matrix
+    (setq pick (MatrixInverseTransformPoint pick matrix))
+  )
+  
+  (setq obj     (vlax-ename->vla-object entName)
+        objName (vla-get-ObjectName obj)
+        bulge   0.0)
+  (cond
+    ((= objName "AcDbLine")
+      (setq p1 (vlax-curve-getstartpoint obj)
+            p2 (vlax-curve-getendpoint obj)) 
+    )
+    ((= objName "AcDbXline")
+      (setq ed (entget entName))
+      (setq dir (cdr (assoc 11 ed)))
+      (setq p1 (vlax-curve-getClosestPointTo obj pick))
+      (setq p2 (mapcar '+ p1 dir)) ;'
+    )
+    ((= objName "AcDbPolyline")
+      (setq pointOnCurve
+               (vlax-curve-getclosestpointto obj pick))
+
+        (setq param
+               (vlax-curve-getParamAtPoint obj pointOnCurve))
+
+        (setq vindex (fix param))
+
+        (setq bulge
+               (vla-GetBulge obj vindex))
+
+        (if (and matrix (MatrixMirroredP matrix))
+          (setq bulge (- bulge))
+        )
+
+        (setq p1
+               (vlax-curve-getPointAtParam obj vindex))
+
+        (setq p2
+               (vlax-curve-getPointAtParam obj (1+ vindex)))
+    )
+    ((= objName "AcDbWipeout")
+     (princ "\nWipeout segment selected.")
+      (setq wipePts
+        (GetWipeoutSegment
+          entName
+          pick
+        )
+      )
+      (if wipePts
+        (setq p1 (car wipePts)
+              p2 (cadr wipePts))
+      )
+    )
+    ((= objName "AcDbHatch")
+     (princ "\nHatch segment selected.")
+      (setq hatchSeg
+        (GetHatchSegment
+          obj
+          pick
+        )
+      )      
+      (setq p1 (car hatchSeg)
+            p2 (cadr hatchSeg)
+            bulge (caddr hatchSeg))
+    )
+  )
+  (if matrix
+    (progn
+      (setq p1 (MatrixTransformPoint p1 matrix))
+      (setq p2 (MatrixTransformPoint p2 matrix))
+    )
+  )
+  (setq p1 (trans p1 0 1))
+  (setq p2 (trans p2 0 1))
+  (list p1 p2 vindex bulge entName)
+)
 
 (defun SgCopy-OffsetEnded
   (reactor params / cmd)
@@ -196,6 +213,87 @@
 
   (princ)
 )
+
+(defun ClosestPointOnSegment (p a b / ab ap u pt)
+  (setq ab (mapcar '- b a)
+        ap (mapcar '- p a))
+  (setq u
+    (if (> (apply '+ (mapcar '* ab ab)) 1e-12)
+      (/ (apply '+ (mapcar '* ap ab))
+         (apply '+ (mapcar '* ab ab)))
+      0.0
+    )
+  )
+  (setq u (max 0.0 (min 1.0 u)))
+  (setq pt (mapcar
+    '+
+    a
+    (mapcar
+      '(lambda (x) (* x u))
+      ab
+    )
+  ))
+)
+
+(defun GetWipeoutSegment
+  (ent pick / ed pts i p1 p2 cp d
+             bestD bestP1 bestP2
+             insPt uVec vVec)
+  (setq ed (entget ent))
+  (setq insPt (cdr (assoc 10 ed))   ; insertion point (WCS)
+        uVec  (cdr (assoc 11 ed))   ; U-vector of one pixel (WCS)
+        vVec  (cdr (assoc 12 ed)))  ; V-vector of one pixel (WCS)
+  (setq pts
+    (mapcar
+      'cdr
+      (vl-remove-if-not
+        '(lambda (x) (= (car x) 14))
+        ed
+      )
+    )
+  )
+  (setq pts (reverse (cdr (reverse pts))))
+  ;; Convert WIPEOUT group 14 coordinates to local WCS coords
+  (setq pts
+    (mapcar
+      '(lambda (pt)
+         (mapcar '+
+           insPt
+           ;; U direction
+           (mapcar
+             '(lambda (u)
+                (* (+ (car pt) 0.5) u)
+              )
+             uVec
+           )
+           ;; V direction
+           ;; WIPEOUT Y axis is inverted
+           (mapcar
+             '(lambda (v)
+                (* (- 0.5 (cadr pt)) v)
+              )
+             vVec
+           )
+         )
+       )
+      pts
+    )
+  )
+  (setq i 0
+        bestD nil)
+  (repeat (length pts)
+    (setq p1 (nth i pts))
+    (setq p2 (if (= i (1- (length pts))) (car pts) (nth (1+ i) pts)))
+    (setq cp (ClosestPointOnSegment pick p1 p2))
+    (setq d  (distance pick cp))
+    (if (or (null bestD) (< d bestD))
+      (setq bestD d bestP1 p1 bestP2 p2)
+    )
+    (setq i (1+ i))
+  )
+  (list bestP1 bestP2)
+)
+
 
 ; MCS → WCS
 (defun MatrixTransformPoint (pt mat / r0 r1 r2 x y z)
@@ -290,4 +388,63 @@
        (* c (- (* d h) (* e g)))))
 
   (< det 0.0)
+)
+
+(defun XLOnSegment ( / sel seg p1 p2 ang tol )
+
+  (if (setq sel (nentselp "\nPick a segment: "))
+    (progn
+      (setq seg (getSegmentPoints sel)
+            p1  (car seg)
+            p2  (cadr seg))
+      (setq ang (angle p1 p2))
+      
+      ;; Normalize angle to -90 ... +90
+      (if (> ang (/ pi 2.0))
+        (setq ang (- ang pi))
+      )
+      
+      ;; Snap nearly horizontal / vertical
+      (cond
+        ;; Near 0 degrees
+        ((< (abs ang) tol)
+         (setq ang 0.0)
+        )
+
+        ;; Near 90 degrees
+        ((< (abs (- (abs ang) (/ pi 2.0))) tol)
+         (setq ang
+           (if (< ang 0.0)
+             (- (/ pi 2.0))
+             (/ pi 2.0)
+           )
+         )
+        )
+      )
+
+      ;; Create XLINE exactly at p1
+      (command
+        "_.XLINE"
+        "_A"
+        (angtos ang 0 8)
+        p1
+        ""
+      )
+
+      ;; Offset the newly created XLINE
+      (c:OffsetJoined)
+    )
+  )
+
+  (princ)
+)
+
+(defun c:XLONSEGMENT ( )
+  (XLOnSegment)
+  (princ)
+)
+
+(defun c:CX ( )
+  (XLOnSegment)
+  (princ)
 )
