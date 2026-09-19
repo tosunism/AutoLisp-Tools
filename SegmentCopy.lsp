@@ -11,9 +11,7 @@
     (setq seg   (getSegmentPoints sel)
           p1    (car seg)
           p2    (cadr seg)
-          bulge (cadddr seg))
-
-    ;; Create copied segment
+          bulge (caddr seg))
     (entmake
       (list
         (cons 0 "LWPOLYLINE")
@@ -46,62 +44,9 @@
   (princ)
 )
 
+;;;;; segment extraction ;;;;;
 
-(defun c:OffsetJoined ( / ent ss )
-
-  ;; The object currently being used for OFFSET
-  (setq ent (entlast))
-
-  (if ent
-    (progn
-
-      ;; Save it globally
-      (setq joinedEnt ent)
-
-      (princ
-        (strcat
-          "\nJoined entity: "
-          (vl-princ-to-string joinedEnt)
-        )
-      )
-
-      ;; Put it in PickFirst
-      (setq ss (ssadd))
-      (ssadd ent ss)
-      (sssetfirst nil ss)
-
-      ;; ------------------------------------------------------
-      ;; Create reactor BEFORE starting OFFSET
-      ;; ------------------------------------------------------
-
-      (if *SgCopyOffsetReactor*
-        (vlr-command-reactor
-          *SgCopyOffsetReactor*
-        )
-      )
-
-      (setq *SgCopyOffsetReactor*
-        (vlr-command-reactor
-          nil
-          '((:vlr-commandEnded . SgCopy-OffsetEnded)) ;'
-        )
-      )
-
-      ;; ------------------------------------------------------
-      ;; Start OFFSET
-      ;; ------------------------------------------------------
-
-      (vla-SendCommand
-        doc
-        "_.OFFSET\nT\n"
-      )
-    )
-  )
-
-  (princ)
-)
-
-(defun getSegmentPoints ( sel /  entName pick matrix obj objName bulge p1 p2 pointOnCurve param vindex)
+(defun getSegmentPoints ( sel /  entName pick matrix obj objName bulge p1 p2 pointOnCurve param vindex seg)
   (setq entName (car sel)
         pick (cadr sel)
         matrix (caddr sel))
@@ -125,51 +70,21 @@
       (setq p2 (mapcar '+ p1 dir)) ;'
     )
     ((= objName "AcDbPolyline")
-      (setq pointOnCurve
-               (vlax-curve-getclosestpointto obj pick))
-
-        (setq param
-               (vlax-curve-getParamAtPoint obj pointOnCurve))
-
-        (setq vindex (fix param))
-
-        (setq bulge
-               (vla-GetBulge obj vindex))
-
-        (if (and matrix (MatrixMirroredP matrix))
-          (setq bulge (- bulge))
-        )
-
-        (setq p1
-               (vlax-curve-getPointAtParam obj vindex))
-
-        (setq p2
-               (vlax-curve-getPointAtParam obj (1+ vindex)))
-    )
-    ((= objName "AcDbWipeout")
-     (princ "\nWipeout segment selected.")
-      (setq wipePts
-        (GetWipeoutSegment
-          entName
-          pick
-        )
-      )
-      (if wipePts
-        (setq p1 (car wipePts)
-              p2 (cadr wipePts))
-      )
+      (setq seg (getSegFromPline obj pick matrix))
+      (setq p1 (car seg)
+            p2 (cadr seg)
+            bulge (caddr seg))
     )
     ((= objName "AcDbHatch")
-     (princ "\nHatch segment selected.")
-      (setq hatchSeg
-        (GetHatchSegment
-          obj
-          pick
-        )
-      )      
-      (setq p1 (car hatchSeg)
-            p2 (cadr hatchSeg)
-            bulge (caddr hatchSeg))
+      (setq seg (getSegFromHatch obj pick matrix))
+      (setq p1 (car seg)
+            p2 (cadr seg)
+            bulge (caddr seg))
+    )
+    ((= objName "AcDbWipeout")
+      (setq seg (GetWipeoutSegment entName pick))
+      (setq p1 (car seg)
+            p2 (cadr seg))
     )
   )
   (if matrix
@@ -180,80 +95,67 @@
   )
   (setq p1 (trans p1 0 1))
   (setq p2 (trans p2 0 1))
-  (list p1 p2 vindex bulge entName)
+  (list p1 p2 bulge)
 )
 
-(defun SgCopy-OffsetEnded
-  (reactor params / cmd)
-
-  (setq cmd (strcase (car params)))
-
-  (if (= cmd "OFFSET")
-
-    (progn
-
-      ;; Remove reactor first
-      (if *SgCopyOffsetReactor*
-        (progn
-          (vlr-remove *SgCopyOffsetReactor*)
-          (setq *SgCopyOffsetReactor* nil)
-        )
-      )
-
-      ;; Delete the original joined object
-      (if (and joinedEnt
-               (entget joinedEnt))
-        (progn
-          (entdel joinedEnt)
-          (setq joinedEnt nil)
-        )
-      )
-    )
+(defun getSegFromPline (obj pick matrix / vindex param pointOnCurve bulge p1 p2)
+  (setq pointOnCurve (vlax-curve-getclosestpointto obj pick))
+  (setq param (vlax-curve-getParamAtPoint obj pointOnCurve))
+  (setq vindex (fix param))
+  (setq bulge (vla-GetBulge obj vindex))
+  (if (and matrix (MatrixMirroredP matrix))
+    (setq bulge (- bulge))
   )
-
-  (princ)
+  (setq p1 (vlax-curve-getPointAtParam obj vindex))
+  (setq p2 (vlax-curve-getPointAtParam obj (1+ vindex)))
+  (list p1 p2 bulge)   
 )
 
-(defun ClosestPointOnSegment (p a b / ab ap u pt)
-  (setq ab (mapcar '- b a)
-        ap (mapcar '- p a))
-  (setq u
-    (if (> (apply '+ (mapcar '* ab ab)) 1e-12)
-      (/ (apply '+ (mapcar '* ap ab))
-         (apply '+ (mapcar '* ab ab)))
-      0.0
+(defun getSegFromHatch (hatchObj pick matrix / boundaries lastEnt bestDist bestBoundary obj pt dist hSeg)
+  (setq lastEnt (entlast))
+  (command "_HATCHGENERATEBOUNDARY" (vlax-vla-object->ename hatchObj) "")
+  (while (setq lastEnt (entnext lastEnt))
+    (setq boundaries (cons lastEnt boundaries))
+  )
+  (setq bestDist nil
+        bestBoundary nil)
+  (foreach boundary boundaries
+    (setq obj (vlax-ename->vla-object boundary))
+    (setq pt (vlax-curve-getClosestPointTo obj pick))
+    (setq dist (distance pick pt))
+    (if (or (null bestDist) (< dist bestDist))
+      (setq bestDist dist
+            bestBoundary boundary)
     )
   )
-  (setq u (max 0.0 (min 1.0 u)))
-  (setq pt (mapcar
-    '+
-    a
-    (mapcar
-      '(lambda (x) (* x u))
-      ab
-    )
-  ))
+  (setq hSeg (getSegFromPline (vlax-ename->vla-object bestBoundary) pick matrix))
+  (foreach boundary boundaries (entdel boundary))
+  hSeg
 )
 
 (defun GetWipeoutSegment
   (ent pick / ed pts i p1 p2 cp d
-             bestD bestP1 bestP2
-             insPt uVec vVec)
+       bestD bestP1 bestP2
+       insPt uVec vVec)
   (setq ed (entget ent))
-  (setq insPt (cdr (assoc 10 ed))   ; insertion point (WCS)
-        uVec  (cdr (assoc 11 ed))   ; U-vector of one pixel (WCS)
-        vVec  (cdr (assoc 12 ed)))  ; V-vector of one pixel (WCS)
+  (setq insPt (cdr (assoc 10 ed))
+        uVec  (cdr (assoc 11 ed))
+        vVec  (cdr (assoc 12 ed))
+  )
   (setq pts
     (mapcar
       'cdr
       (vl-remove-if-not
-        '(lambda (x) (= (car x) 14))
+        '(lambda (x)
+           (= (car x) 14)
+         )
         ed
       )
     )
   )
-  (setq pts (reverse (cdr (reverse pts))))
-  ;; Convert WIPEOUT group 14 coordinates to local WCS coords
+  (setq pts
+    (reverse (cdr (reverse pts)))
+  )
   (setq pts
     (mapcar
       '(lambda (pt)
@@ -279,172 +181,197 @@
       pts
     )
   )
+
   (setq i 0
         bestD nil)
   (repeat (length pts)
     (setq p1 (nth i pts))
-    (setq p2 (if (= i (1- (length pts))) (car pts) (nth (1+ i) pts)))
-    (setq cp (ClosestPointOnSegment pick p1 p2))
-    (setq d  (distance pick cp))
-    (if (or (null bestD) (< d bestD))
-      (setq bestD d bestP1 p1 bestP2 p2)
+    (setq p2
+      (if (= i (1- (length pts)))
+        (car pts)
+        (nth (1+ i) pts)
+      )
+    )
+    (setq cp
+      (ClosestPointOnSegment pick p1 p2)
+    )
+    (setq d
+      (distance pick cp)
+    )
+    (if (or (null bestD)
+            (< d bestD))
+      (setq bestD  d
+            bestP1 p1
+            bestP2 p2)
     )
     (setq i (1+ i))
   )
   (list bestP1 bestP2)
 )
 
+;;;;;; matrix functions ;;;;;;
 
 ; MCS → WCS
 (defun MatrixTransformPoint (pt mat / r0 r1 r2 x y z)
-  (setq r0 (nth 0 mat)
-        r1 (nth 1 mat)
-        r2 (nth 2 mat)
-        x  (car pt)
-        y  (cadr pt)
-        z  (cond ((caddr pt)) (0.0)))
+(setq r0 (nth 0 mat)
+r1 (nth 1 mat)
+r2 (nth 2 mat)
+x  (car pt)
+y  (cadr pt)
+z  (cond ((caddr pt)) (0.0)))
 
-  (list
-    (+ (* x (nth 0 r0)) (* y (nth 1 r0)) (* z (nth 2 r0)) (nth 3 r0))
-    (+ (* x (nth 0 r1)) (* y (nth 1 r1)) (* z (nth 2 r1)) (nth 3 r1))
-    (+ (* x (nth 0 r2)) (* y (nth 1 r2)) (* z (nth 2 r2)) (nth 3 r2))
-  )
+(list
+(+ (* x (nth 0 r0)) (* y (nth 1 r0)) (* z (nth 2 r0)) (nth 3 r0))
+(+ (* x (nth 0 r1)) (* y (nth 1 r1)) (* z (nth 2 r1)) (nth 3 r1))
+(+ (* x (nth 0 r2)) (* y (nth 1 r2)) (* z (nth 2 r2)) (nth 3 r2))
+)
 )
 
 ; WCS → MCS
 (defun MatrixInverseTransformPoint (pt mat / r0 r1 r2
-                                       a b c d e f g h i
-                                       tx ty tz
-                                       det
-                                       inv00 inv01 inv02
-                                       inv10 inv11 inv12
-                                       inv20 inv21 inv22
-                                       px py pz)
+a b c d e f g h i
+tx ty tz
+det
+inv00 inv01 inv02
+inv10 inv11 inv12
+inv20 inv21 inv22
+px py pz)
 
-  (setq r0 (nth 0 mat)
-        r1 (nth 1 mat)
-        r2 (nth 2 mat))
+(setq r0 (nth 0 mat)
+r1 (nth 1 mat)
+r2 (nth 2 mat))
 
-  ;; Linear part
-  (setq a (nth 0 r0)  b (nth 1 r0)  c (nth 2 r0)
-        d (nth 0 r1)  e (nth 1 r1)  f (nth 2 r1)
-        g (nth 0 r2)  h (nth 1 r2)  i (nth 2 r2))
+;; Linear part
+(setq a (nth 0 r0)  b (nth 1 r0)  c (nth 2 r0)
+d (nth 0 r1)  e (nth 1 r1)  f (nth 2 r1)
+g (nth 0 r2)  h (nth 1 r2)  i (nth 2 r2))
 
-  ;; Translation
-  (setq tx (nth 3 r0)
-        ty (nth 3 r1)
-        tz (nth 3 r2))
+;; Translation
+(setq tx (nth 3 r0)
+ty (nth 3 r1)
+tz (nth 3 r2))
 
-  ;; Remove translation
-  (setq px (- (car pt) tx)
-        py (- (cadr pt) ty)
-        pz (- (if (caddr pt) (caddr pt) 0.0) tz))
+;; Remove translation
+(setq px (- (car pt) tx)
+py (- (cadr pt) ty)
+pz (- (if (caddr pt) (caddr pt) 0.0) tz))
 
-  ;; Determinant
-  (setq det
-    (+ (* a (- (* e i) (* f h)))
-       (* (- b) (- (* d i) (* f g)))
-       (* c (- (* d h) (* e g)))))
+;; Determinant
+(setq det
+(+ (* a (- (* e i) (* f h)))
+(* (- b) (- (* d i) (* f g)))
+(* c (- (* d h) (* e g)))))
 
-  (if (equal det 0.0 1e-12)
-    nil
-    (progn
-      ;; Inverse 3×3
-      (setq inv00 (/ (- (* e i) (* f h)) det)
-            inv01 (/ (- (* c h) (* b i)) det)
-            inv02 (/ (- (* b f) (* c e)) det)
+(if (equal det 0.0 1e-12)
+nil
+(progn
+;; Inverse 3×3
+(setq inv00 (/ (- (* e i) (* f h)) det)
+inv01 (/ (- (* c h) (* b i)) det)
+inv02 (/ (- (* b f) (* c e)) det)
 
-            inv10 (/ (- (* f g) (* d i)) det)
-            inv11 (/ (- (* a i) (* c g)) det)
-            inv12 (/ (- (* c d) (* a f)) det)
+        inv10 (/ (- (* f g) (* d i)) det)
+        inv11 (/ (- (* a i) (* c g)) det)
+        inv12 (/ (- (* c d) (* a f)) det)
 
-            inv20 (/ (- (* d h) (* e g)) det)
-            inv21 (/ (- (* b g) (* a h)) det)
-            inv22 (/ (- (* a e) (* b d)) det))
+        inv20 (/ (- (* d h) (* e g)) det)
+        inv21 (/ (- (* b g) (* a h)) det)
+        inv22 (/ (- (* a e) (* b d)) det))
 
-      (list
-        (+ (* px inv00) (* py inv01) (* pz inv02))
-        (+ (* px inv10) (* py inv11) (* pz inv12))
-        (+ (* px inv20) (* py inv21) (* pz inv22))
-      )
-    )
+  (list
+    (+ (* px inv00) (* py inv01) (* pz inv02))
+    (+ (* px inv10) (* py inv11) (* pz inv12))
+    (+ (* px inv20) (* py inv21) (* pz inv22))
   )
+)
+
+)
 )
 
 (defun MatrixMirroredP (mat / r0 r1 r2
-                            a b c d e f g h i det)
+a b c d e f g h i det)
 
-  (setq r0 (nth 0 mat)
-        r1 (nth 1 mat)
-        r2 (nth 2 mat))
+(setq r0 (nth 0 mat)
+r1 (nth 1 mat)
+r2 (nth 2 mat))
 
-  (setq a (nth 0 r0) b (nth 1 r0) c (nth 2 r0)
-        d (nth 0 r1) e (nth 1 r1) f (nth 2 r1)
-        g (nth 0 r2) h (nth 1 r2) i (nth 2 r2))
+(setq a (nth 0 r0) b (nth 1 r0) c (nth 2 r0)
+d (nth 0 r1) e (nth 1 r1) f (nth 2 r1)
+g (nth 0 r2) h (nth 1 r2) i (nth 2 r2))
 
-  (setq det
-    (+ (* a (- (* e i) (* f h)))
-       (* (- b) (- (* d i) (* f g)))
-       (* c (- (* d h) (* e g)))))
+(setq det
+(+ (* a (- (* e i) (* f h)))
+(* (- b) (- (* d i) (* f g)))
+(* c (- (* d h) (* e g)))))
 
-  (< det 0.0)
+(< det 0.0)
 )
 
-(defun XLOnSegment ( / sel seg p1 p2 ang tol )
 
-  (if (setq sel (nentselp "\nPick a segment: "))
+;;;;;; cmd reactor ;;;;;;
+
+(defun c:OffsetJoined ( / ent ss )
+  (setq ent (entlast))
+  (if ent
     (progn
-      (setq seg (getSegmentPoints sel)
-            p1  (car seg)
-            p2  (cadr seg))
-      (setq ang (angle p1 p2))
-      
-      ;; Normalize angle to -90 ... +90
-      (if (> ang (/ pi 2.0))
-        (setq ang (- ang pi))
-      )
-      
-      ;; Snap nearly horizontal / vertical
-      (cond
-        ;; Near 0 degrees
-        ((< (abs ang) tol)
-         (setq ang 0.0)
-        )
-
-        ;; Near 90 degrees
-        ((< (abs (- (abs ang) (/ pi 2.0))) tol)
-         (setq ang
-           (if (< ang 0.0)
-             (- (/ pi 2.0))
-             (/ pi 2.0)
-           )
-         )
+      ;; Save it globally
+      (setq joinedEnt ent)
+      (princ
+        (strcat
+          "\nJoined entity: "
+          (vl-princ-to-string joinedEnt)
         )
       )
-
-      ;; Create XLINE exactly at p1
-      (command
-        "_.XLINE"
-        "_A"
-        (angtos ang 0 8)
-        p1
-        ""
+      ;; Put it in PickFirst
+      (setq ss (ssadd))
+      (ssadd ent ss)
+      (sssetfirst nil ss)
+      ;; ------------------------------------------------------
+      ;; Create reactor BEFORE starting OFFSET
+      ;; ------------------------------------------------------
+      (if *SgCopyOffsetReactor*
+        (vlr-command-reactor
+          *SgCopyOffsetReactor*
+        )
       )
-
-      ;; Offset the newly created XLINE
-      (c:OffsetJoined)
+      (setq *SgCopyOffsetReactor*
+        (vlr-command-reactor
+          nil
+          '((:vlr-commandEnded . SgCopy-OffsetEnded)) ;'
+        )
+      )
+      ;; ------------------------------------------------------
+      ;; Start OFFSET
+      ;; ------------------------------------------------------
+      (vla-SendCommand
+        doc
+        "_.OFFSET\nT\n"
+      )
     )
   )
-
   (princ)
 )
 
-(defun c:XLONSEGMENT ( )
-  (XLOnSegment)
-  (princ)
-)
-
-(defun c:CX ( )
-  (XLOnSegment)
+(defun SgCopy-OffsetEnded (reactor params / cmd)
+  (setq cmd (strcase (car params)))
+  (if (= cmd "OFFSET")
+    (progn
+      ;; Remove reactor first
+      (if *SgCopyOffsetReactor*
+        (progn
+          (vlr-remove *SgCopyOffsetReactor*)
+          (setq *SgCopyOffsetReactor* nil)
+        )
+      )
+      ;; Delete the original joined object
+      (if (and joinedEnt
+               (entget joinedEnt))
+        (progn
+          (entdel joinedEnt)
+          (setq joinedEnt nil)
+        )
+      )
+    )
+  )
   (princ)
 )
