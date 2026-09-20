@@ -209,6 +209,27 @@
   (list bestP1 bestP2)
 )
 
+(defun ClosestPointOnSegment (p a b / ab ap u pt)
+  (setq ab (mapcar '- b a)
+        ap (mapcar '- p a))
+  (setq u
+    (if (> (apply '+ (mapcar '* ab ab)) 1e-12)
+      (/ (apply '+ (mapcar '* ap ab))
+         (apply '+ (mapcar '* ab ab)))
+      0.0
+    )
+  )
+  (setq u (max 0.0 (min 1.0 u)))
+  (setq pt (mapcar
+    '+
+    a
+    (mapcar
+      '(lambda (x) (* x u))
+      ab
+    )
+  ))
+)
+
 ;;;;;; matrix functions ;;;;;;
 
 ; MCS → WCS
