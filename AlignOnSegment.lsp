@@ -185,7 +185,9 @@
   (princ)
 )
 
-(defun getSegmentPoints ( sel /  entName pick matrix obj objName bulge p1 p2 pointOnCurve param vindex)
+;;;;; segment extraction ;;;;;
+
+(defun getSegmentPoints ( sel /  entName pick matrix obj objName bulge p1 p2 pointOnCurve param vindex seg)
   (setq entName (car sel)
         pick (cadr sel)
         matrix (caddr sel))
@@ -206,29 +208,24 @@
       (setq ed (entget entName))
       (setq dir (cdr (assoc 11 ed)))
       (setq p1 (vlax-curve-getClosestPointTo obj pick))
-      (setq p2 (mapcar '+ p1 dir))
+      (setq p2 (mapcar '+ p1 dir)) ;'
     )
     ((= objName "AcDbPolyline")
-      (setq pointOnCurve
-               (vlax-curve-getclosestpointto obj pick))
-
-        (setq param
-               (vlax-curve-getParamAtPoint obj pointOnCurve))
-
-        (setq vindex (fix param))
-
-        (setq bulge
-               (vla-GetBulge obj vindex))
-
-        (if (and matrix (MatrixMirroredP matrix))
-          (setq bulge (- bulge))
-        )
-
-        (setq p1
-               (vlax-curve-getPointAtParam obj vindex))
-
-        (setq p2
-               (vlax-curve-getPointAtParam obj (1+ vindex)))
+      (setq seg (getSegFromPline obj pick matrix))
+      (setq p1 (car seg)
+            p2 (cadr seg)
+            bulge (caddr seg))
+    )
+    ((= objName "AcDbHatch")
+      (setq seg (getSegFromHatch obj pick matrix))
+      (setq p1 (car seg)
+            p2 (cadr seg)
+            bulge (caddr seg))
+    )
+    ((= objName "AcDbWipeout")
+      (setq seg (GetWipeoutSegment entName pick))
+      (setq p1 (car seg)
+            p2 (cadr seg))
     )
   )
   (if matrix
@@ -239,8 +236,142 @@
   )
   (setq p1 (trans p1 0 1))
   (setq p2 (trans p2 0 1))
-  (list p1 p2 vindex bulge entName)
+  (list p1 p2 bulge)
 )
+
+(defun getSegFromPline (obj pick matrix / vindex param pointOnCurve bulge p1 p2)
+  (setq pointOnCurve (vlax-curve-getclosestpointto obj pick))
+  (setq param (vlax-curve-getParamAtPoint obj pointOnCurve))
+  (setq vindex (fix param))
+  (setq bulge (vla-GetBulge obj vindex))
+  (if (and matrix (MatrixMirroredP matrix))
+    (setq bulge (- bulge))
+  )
+  (setq p1 (vlax-curve-getPointAtParam obj vindex))
+  (setq p2 (vlax-curve-getPointAtParam obj (1+ vindex)))
+  (list p1 p2 bulge)   
+)
+
+(defun getSegFromHatch (hatchObj pick matrix / boundaries lastEnt bestDist bestBoundary obj pt dist hSeg)
+  (setq lastEnt (entlast))
+  (command "_HATCHGENERATEBOUNDARY" (vlax-vla-object->ename hatchObj) "")
+  (while (setq lastEnt (entnext lastEnt))
+    (setq boundaries (cons lastEnt boundaries))
+  )
+  (setq bestDist nil
+        bestBoundary nil)
+  (foreach boundary boundaries
+    (setq obj (vlax-ename->vla-object boundary))
+    (setq pt (vlax-curve-getClosestPointTo obj pick))
+    (setq dist (distance pick pt))
+    (if (or (null bestDist) (< dist bestDist))
+      (setq bestDist dist
+            bestBoundary boundary)
+    )
+  )
+  (setq hSeg (getSegFromPline (vlax-ename->vla-object bestBoundary) pick matrix))
+  (foreach boundary boundaries (entdel boundary))
+  hSeg
+)
+
+(defun GetWipeoutSegment
+  (ent pick / ed pts i p1 p2 cp d
+       bestD bestP1 bestP2
+       insPt uVec vVec)
+  (setq ed (entget ent))
+  (setq insPt (cdr (assoc 10 ed))
+        uVec  (cdr (assoc 11 ed))
+        vVec  (cdr (assoc 12 ed))
+  )
+  (setq pts
+    (mapcar
+      'cdr
+      (vl-remove-if-not
+        '(lambda (x)
+           (= (car x) 14)
+         )
+        ed
+      )
+    )
+  )
+  (setq pts
+    (reverse (cdr (reverse pts)))
+  )
+  (setq pts
+    (mapcar
+      '(lambda (pt)
+         (mapcar '+
+           insPt
+           ;; U direction
+           (mapcar
+             '(lambda (u)
+                (* (+ (car pt) 0.5) u)
+              )
+             uVec
+           )
+           ;; V direction
+           ;; WIPEOUT Y axis is inverted
+           (mapcar
+             '(lambda (v)
+                (* (- 0.5 (cadr pt)) v)
+              )
+             vVec
+           )
+         )
+       )
+      pts
+    )
+  )
+
+  (setq i 0
+        bestD nil)
+  (repeat (length pts)
+    (setq p1 (nth i pts))
+    (setq p2
+      (if (= i (1- (length pts)))
+        (car pts)
+        (nth (1+ i) pts)
+      )
+    )
+    (setq cp
+      (ClosestPointOnSegment pick p1 p2)
+    )
+    (setq d
+      (distance pick cp)
+    )
+    (if (or (null bestD)
+            (< d bestD))
+      (setq bestD  d
+            bestP1 p1
+            bestP2 p2)
+    )
+    (setq i (1+ i))
+  )
+  (list bestP1 bestP2)
+)
+
+(defun ClosestPointOnSegment (p a b / ab ap u pt)
+  (setq ab (mapcar '- b a)
+        ap (mapcar '- p a))
+  (setq u
+    (if (> (apply '+ (mapcar '* ab ab)) 1e-12)
+      (/ (apply '+ (mapcar '* ap ab))
+         (apply '+ (mapcar '* ab ab)))
+      0.0
+    )
+  )
+  (setq u (max 0.0 (min 1.0 u)))
+  (setq pt (mapcar
+    '+
+    a
+    (mapcar
+      '(lambda (x) (* x u))
+      ab
+    )
+  ))
+)
+
+;;;;; polyline vertex manipulation ;;;;
 
 (defun SetPolylineVertices
   (obj vindex1 pt1 pt2 / coords i1 i2 arr vindex2)
@@ -279,6 +410,8 @@
 
   (vla-put-Coordinates obj arr)
 )
+
+;;;;;; matrix functions ;;;;;;
 
 ; MCS → WCS
 (defun MatrixTransformPoint (pt mat / r0 r1 r2 x y z)
