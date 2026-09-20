@@ -93,8 +93,6 @@
       (setq p2 (MatrixTransformPoint p2 matrix))
     )
   )
-  (setq p1 (trans p1 0 1))
-  (setq p2 (trans p2 0 1))
   (list p1 p2 bulge)
 )
 
@@ -404,8 +402,8 @@ g (nth 0 r2) h (nth 1 r2) i (nth 2 r2))
   (if (setq sel (nentselp "\nPick a segment: "))
     (progn
       (setq seg (getSegmentPoints sel)
-            p1  (car seg)
-            p2  (cadr seg))
+            p1  (trans (car seg) 0 1)
+            p2  (trans (cadr seg) 0 1))
       (setq ang (angle p1 p2))
       
       ;; Normalize angle to -90 ... +90

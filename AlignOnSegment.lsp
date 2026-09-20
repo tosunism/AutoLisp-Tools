@@ -234,8 +234,6 @@
       (setq p2 (MatrixTransformPoint p2 matrix))
     )
   )
-  (setq p1 (trans p1 0 1))
-  (setq p2 (trans p2 0 1))
   (list p1 p2 bulge)
 )
 
