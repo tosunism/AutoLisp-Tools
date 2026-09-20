@@ -375,3 +375,61 @@ g (nth 0 r2) h (nth 1 r2) i (nth 2 r2))
   )
   (princ)
 )
+
+;;;;;; XLINE on segment ;;;;;;
+
+(defun XLOnSegment ( / sel seg p1 p2 ang tol )
+
+  (if (setq sel (nentselp "\nPick a segment: "))
+    (progn
+      (setq seg (getSegmentPoints sel)
+            p1  (car seg)
+            p2  (cadr seg))
+      (setq ang (angle p1 p2))
+      
+      ;; Normalize angle to -90 ... +90
+      (if (> ang (/ pi 2.0))
+        (setq ang (- ang pi))
+      )
+      
+      ;; Snap nearly horizontal / vertical
+      (cond
+        ;; Near 0 degrees
+        ((< (abs ang) tol)
+         (setq ang 0.0)
+        )
+
+        ;; Near 90 degrees
+        ((< (abs (- (abs ang) (/ pi 2.0))) tol)
+         (setq ang
+           (if (< ang 0.0)
+             (- (/ pi 2.0))
+             (/ pi 2.0)
+           )
+         )
+        )
+      )
+
+      ;; Create XLINE exactly at p1
+      (command
+        "_.XLINE"
+        "_A"
+        (angtos ang 0 8)
+        p1
+        ""
+      )
+
+      ;; Offset the newly created XLINE
+      (c:OffsetJoined)
+    )
+    (progn
+      (command "_.XLINE")
+    )
+  )
+  (princ)
+)
+
+(defun c:CX ( )
+  (XLOnSegment)
+  (princ)
+)
