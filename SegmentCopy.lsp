@@ -46,15 +46,16 @@
 
 ;;;;; segment extraction ;;;;;
 
-(defun getSegmentPoints ( sel /  entName pick matrix obj objName bulge p1 p2 pointOnCurve param vindex seg)
+(defun getSegmentPoints ( sel / entName rawPick pick matrix obj objName bulge p1 p2
+          seg ed dir tmpHatch )
   (setq entName (car sel)
-        pick (cadr sel)
+        rawPick (cadr sel)
         matrix (caddr sel))
-  (setq pick (trans pick 1 0))
+  (setq rawPick (trans rawPick 1 0))
   (if matrix
-    (setq pick (MatrixInverseTransformPoint pick matrix))
+    (setq pick (MatrixInverseTransformPoint rawPick matrix))
+    (setq pick rawPick)
   )
-  
   (setq obj     (vlax-ename->vla-object entName)
         objName (vla-get-ObjectName obj)
         bulge   0.0)
@@ -76,7 +77,15 @@
             bulge (caddr seg))
     )
     ((= objName "AcDbHatch")
-      (setq seg (getSegFromHatch obj pick matrix))
+      (if matrix
+        (progn
+          (setq tmpHatch (makeTempHatch entName matrix))
+          (setq matrix nil)
+          (setq seg (getSegFromHatch tmpHatch rawPick matrix))
+          (entdel tmpHatch)
+        )
+        (setq seg (getSegFromHatch entName pick matrix))        
+      )
       (setq p1 (car seg)
             p2 (cadr seg)
             bulge (caddr seg))
@@ -109,9 +118,28 @@
   (list p1 p2 bulge)   
 )
 
-(defun getSegFromHatch (hatchObj pick matrix / boundaries lastEnt bestDist bestBoundary obj pt dist hSeg)
+(defun makeTempHatch ( hatch matrix / data )
+  (setq data (entget hatch))
+  ;; Remove ownership/identity data from original hatch
+  (setq data
+    (vl-remove-if
+      '(lambda (x)
+         (member (car x) '(-1 5 330 360)))
+      data
+    )
+  )
+  (setq hatch (entmakex data))
+  (vla-TransformBy
+    (vlax-ename->vla-object hatch)
+    (vlax-tmatrix matrix)
+  )  
+  hatch
+)
+
+(defun getSegFromHatch (hatch pick matrix / boundaries lastEnt bestDist bestBoundary
+          obj pt dist hSeg)
   (setq lastEnt (entlast))
-  (command "_HATCHGENERATEBOUNDARY" (vlax-vla-object->ename hatchObj) "")
+  (command "_HATCHGENERATEBOUNDARY" hatch "")
   (while (setq lastEnt (entnext lastEnt))
     (setq boundaries (cons lastEnt boundaries))
   )
@@ -133,8 +161,7 @@
 
 (defun GetWipeoutSegment
   (ent pick / ed pts i p1 p2 cp d
-       bestD bestP1 bestP2
-       insPt uVec vVec)
+             bestD bestP1 bestP2 insPt uVec vVec)
   (setq ed (entget ent))
   (setq insPt (cdr (assoc 10 ed))
         uVec  (cdr (assoc 11 ed))
@@ -397,7 +424,7 @@ g (nth 0 r2) h (nth 1 r2) i (nth 2 r2))
 
 ;;;;;; XLINE on segment ;;;;;;
 
-(defun XLOnSegment ( / sel seg p1 p2 ang tol )
+(defun XLOnSegment ( / sel seg p1 p2 ang )
 
   (if (setq sel (nentselp "\nPick a segment: "))
     (progn
