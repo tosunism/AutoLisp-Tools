@@ -11,19 +11,27 @@
     (setq seg   (getSegmentPoints sel)
           p1    (car seg)
           p2    (cadr seg)
-          bulge (caddr seg))
-    (entmake
-      (list
-        (cons 0 "LWPOLYLINE")
-        (cons 100 "AcDbEntity")
-        (cons 100 "AcDbPolyline")
-        (cons 90 2)
-        (cons 70 0)
-        (cons 10 p1)
-        (cons 42 bulge)
-        (cons 10 p2)
+          bulge (caddr seg)
+          normal (cadddr seg))
+    (if normal
+      (progn
+        (hs:make-pline seg)
+        (princ "\ngot the hatch segment")
+      )
+      (entmake
+        (list
+          (cons 0 "LWPOLYLINE")
+          (cons 100 "AcDbEntity")
+          (cons 100 "AcDbPolyline")
+          (cons 90 2)
+          (cons 70 0)
+          (cons 10 p1)
+          (cons 42 bulge)
+          (cons 10 p2)
+        )
       )
     )
+    
     (ssadd (entlast) selSet)
   )
   (if (> (sslength selSet) 0)
@@ -47,7 +55,7 @@
 ;;;;; segment extraction ;;;;;
 
 (defun getSegmentPoints ( sel / entName rawPick pick matrix obj objName bulge p1 p2
-          seg ed dir tmpHatch )
+          seg ed dir tmpHatch normal)
   (setq entName (car sel)
         rawPick (cadr sel)
         matrix (caddr sel))
@@ -77,18 +85,12 @@
             bulge (caddr seg))
     )
     ((= objName "AcDbHatch")
-      (if matrix
-        (progn
-          (setq tmpHatch (makeTempHatch entName matrix))
-          (setq matrix nil)
-          (setq seg (getSegFromHatch tmpHatch rawPick matrix))
-          (entdel tmpHatch)
-        )
-        (setq seg (getSegFromHatch entName pick matrix))        
-      )
+      (setq seg (HS:SegmentAtPick entName rawPick matrix))
       (setq p1 (car seg)
             p2 (cadr seg)
-            bulge (caddr seg))
+            bulge (caddr seg)
+            normal (cadddr seg))
+      (setq matrix nil)
     )
     ((= objName "AcDbWipeout")
       (setq seg (GetWipeoutSegment entName pick))
@@ -102,7 +104,7 @@
       (setq p2 (MatrixTransformPoint p2 matrix))
     )
   )
-  (list p1 p2 bulge)
+  (list p1 p2 bulge normal)
 )
 
 (defun getSegFromPline (obj pick matrix / vindex param pointOnCurve bulge p1 p2)
@@ -116,47 +118,6 @@
   (setq p1 (vlax-curve-getPointAtParam obj vindex))
   (setq p2 (vlax-curve-getPointAtParam obj (1+ vindex)))
   (list p1 p2 bulge)   
-)
-
-(defun makeTempHatch ( hatch matrix / data )
-  (setq data (entget hatch))
-  ;; Remove ownership/identity data from original hatch
-  (setq data
-    (vl-remove-if
-      '(lambda (x)
-         (member (car x) '(-1 5 330 360)))
-      data
-    )
-  )
-  (setq hatch (entmakex data))
-  (vla-TransformBy
-    (vlax-ename->vla-object hatch)
-    (vlax-tmatrix matrix)
-  )  
-  hatch
-)
-
-(defun getSegFromHatch (hatch pick matrix / boundaries lastEnt bestDist bestBoundary
-          obj pt dist hSeg)
-  (setq lastEnt (entlast))
-  (command "_HATCHGENERATEBOUNDARY" hatch "")
-  (while (setq lastEnt (entnext lastEnt))
-    (setq boundaries (cons lastEnt boundaries))
-  )
-  (setq bestDist nil
-        bestBoundary nil)
-  (foreach boundary boundaries
-    (setq obj (vlax-ename->vla-object boundary))
-    (setq pt (vlax-curve-getClosestPointTo obj pick))
-    (setq dist (distance pick pt))
-    (if (or (null bestDist) (< dist bestDist))
-      (setq bestDist dist
-            bestBoundary boundary)
-    )
-  )
-  (setq hSeg (getSegFromPline (vlax-ename->vla-object bestBoundary) pick matrix))
-  (foreach boundary boundaries (entdel boundary))
-  hSeg
 )
 
 (defun GetWipeoutSegment
@@ -478,4 +439,331 @@ g (nth 0 r2) h (nth 1 r2) i (nth 2 r2))
 (defun c:CX ( )
   (XLOnSegment)
   (princ)
+)
+
+
+
+;;;;; ******************  HSEG  ********************** ;;;;;;;
+
+;;; ------------------------------------------------------------------
+;;; Vektor / matris yardimcilari
+;;; ------------------------------------------------------------------
+
+(defun hs:dot (u v) (apply '+ (mapcar '* u v)))
+(defun hs:len (v) (sqrt (hs:dot v v)))
+(defun hs:2d (p) (list (car p) (cadr p)))
+(defun hs:tan (a) (/ (sin a) (cos a)))
+
+(defun hs:unit (v / l)
+  (setq l (hs:len v))
+  (if (> l 1e-12) (mapcar '(lambda (x) (/ x l)) v))
+)
+
+(defun hs:cross (u v)
+  (list (- (* (cadr u) (caddr v)) (* (caddr u) (cadr v)))
+        (- (* (caddr u) (car v)) (* (car u) (caddr v)))
+        (- (* (car u) (cadr v)) (* (cadr u) (car v))))
+)
+
+;; 0 <= a < 2pi
+(defun hs:nrm (a)
+  (setq a (rem a (+ pi pi)))
+  (if (< a 0.0) (+ a pi pi) a)
+)
+
+;; 4x4 matris * nokta (MCS -> WCS)
+(defun hs:mxp (m p)
+  (mapcar '(lambda (r) (+ (hs:dot (list (car r) (cadr r) (caddr r)) p) (cadddr r)))
+          (list (car m) (cadr m) (caddr m)))
+)
+
+;; 4x4 matrisin 3x3 kismi * vektor
+(defun hs:mxv (m v)
+  (mapcar '(lambda (r) (hs:dot (list (car r) (cadr r) (caddr r)) v))
+          (list (car m) (cadr m) (caddr m)))
+)
+
+;; Hatch OCS 2D nokta -> WCS 3D
+(defun hs:o2w (p nrm elev mat)
+  (hs:mxp mat (trans (list (car p) (cadr p) elev) nrm 0))
+)
+
+;;; ------------------------------------------------------------------
+;;; Bulge geometrisi ve 2D mesafe
+;;; ------------------------------------------------------------------
+
+;; (merkez yaricap)
+(defun hs:bulge-center (p1 p2 b / th r)
+  (setq th (* 4.0 (atan b))
+        r  (/ (distance p1 p2) (* 2.0 (sin (/ th 2.0)))))
+  (list (polar p1 (+ (angle p1 p2) (- (/ pi 2.0) (/ th 2.0))) r) (abs r))
+)
+
+(defun hs:dist-line (q a b / ab d2 k)
+  (setq ab (mapcar '- b a)
+        d2 (hs:dot ab ab))
+  (if (< d2 1e-18)
+    (distance q a)
+    (progn
+      (setq k (max 0.0 (min 1.0 (/ (hs:dot (mapcar '- q a) ab) d2))))
+      (distance q (mapcar '(lambda (s d) (+ s (* d k))) a ab))
+    )
+  )
+)
+
+(defun hs:dist-arc (q p1 p2 b / cr c r a1 a2)
+  (setq cr (hs:bulge-center p1 p2 b)
+        c  (car cr)
+        r  (cadr cr))
+  ;; yayi her zaman CCW yonde a1 -> a2 olarak ele al
+  (if (> b 0.0)
+    (setq a1 (angle c p1) a2 (angle c p2))
+    (setq a1 (angle c p2) a2 (angle c p1))
+  )
+  (if (<= (hs:nrm (- (angle c q) a1)) (+ (hs:nrm (- a2 a1)) 1e-12))
+    (abs (- (distance c q) r))
+    (min (distance q p1) (distance q p2))
+  )
+)
+
+;; seg = (p1 p2 bulge), 2D
+(defun hs:dist-seg (q seg)
+  (if (< (abs (caddr seg)) 1e-12)
+    (hs:dist-line q (car seg) (cadr seg))
+    (hs:dist-arc q (car seg) (cadr seg) (caddr seg))
+  )
+)
+
+;;; ------------------------------------------------------------------
+;;; Hatch boundary verisini segment listesine cevirme (hatch OCS, 2D)
+;;; ------------------------------------------------------------------
+
+;; from -> to arasindaki CCW aci farki, 0 ise tam daire
+(defun hs:sweep (from to / s)
+  (setq s (hs:nrm (- to from)))
+  (if (< s 1e-9) (+ pi pi) s)
+)
+
+;; Yay -> segment listesi. dir: 1 = CCW, -1 = CW
+(defun hs:arc-segs (c r sa sw dir / pa pm)
+  (setq pa (polar c sa r))
+  (if (>= sw (- (+ pi pi) 1e-9))
+    (progn
+      (setq pm (polar c (+ sa (* dir pi)) r))
+      (list (list pa pm (float dir)) (list pm pa (float dir)))
+    )
+    (list (list pa (polar c (+ sa (* dir sw)) r) (* dir (hs:tan (/ sw 4.0)))))
+  )
+)
+
+;; Polyline tipi loop vertex listesi ((pt bulge) ...) -> segmentler
+(defun hs:verts->segs (vl / out)
+  (while (cadr vl)
+    (if (> (distance (caar vl) (caadr vl)) 1e-9)
+      (setq out (cons (list (caar vl) (caadr vl) (cadar vl)) out))
+    )
+    (setq vl (cdr vl))
+  )
+  (reverse out)
+)
+
+(defun hs:mind (p pts)
+  (apply 'min (mapcar '(lambda (x) (distance p x)) pts))
+)
+
+;; Aday segment zincirinin uclarinin, loop'taki kesin uc noktalara uzakligi
+(defun hs:score (sl pts)
+  (if pts
+    (+ (hs:mind (car (car sl)) pts) (hs:mind (cadr (last sl)) pts))
+    0.0
+  )
+)
+
+(defun hs:hatch-segments (ed / lst segs flag closed verts items fix
+                              typ p q c r a50 a51 ccw sw skipped)
+  (setq lst     (cdr (member (assoc 91 ed) ed))
+        skipped 0)
+  (repeat (cdr (assoc 91 ed))
+    (setq lst   (member (assoc 92 lst) lst)
+          flag  (cdar lst)
+          lst   (cdr lst)
+          items nil)
+    (if (= 2 (logand 2 flag))
+      ;; --- Polyline tipi loop: 72 bulge var, 73 kapali, 93 adet, 10/42 ---
+      (progn
+        (setq closed (= 1 (cdr (assoc 73 lst)))
+              lst    (cdr (member (assoc 93 lst) lst))
+              verts  nil)
+        (while (member (caar lst) '(10 42))
+          (if (= 10 (caar lst))
+            (setq verts (cons (list (hs:2d (cdar lst)) 0.0) verts))
+            (setq verts (cons (list (car (car verts)) (cdar lst)) (cdr verts)))
+          )
+          (setq lst (cdr lst))
+        )
+        (setq verts (reverse verts))
+        (if (and closed verts)
+          (setq verts (append verts (list (list (car (car verts)) 0.0))))
+        )
+        (setq items (list (list 'F (hs:verts->segs verts))))
+      )
+      ;; --- Kenar tipi loop: 93 kenar adedi, her kenar 72 tip ile baslar ---
+      (progn
+        (repeat (cdr (assoc 93 lst))
+          (setq lst (member (assoc 72 lst) lst)
+                typ (cdar lst)
+                lst (cdr lst))
+          (cond
+            ;; Cizgi
+            ((= typ 1)
+             (setq p (hs:2d (cdr (assoc 10 lst)))
+                   q (hs:2d (cdr (assoc 11 lst))))
+             (if (> (distance p q) 1e-9)
+               (setq items (cons (list 'F (list (list p q 0.0))) items))
+             )
+            )
+            ;; Daire yayi
+            ((= typ 2)
+             (setq c   (hs:2d (cdr (assoc 10 lst)))
+                   r   (cdr (assoc 40 lst))
+                   a50 (cdr (assoc 50 lst))
+                   a51 (cdr (assoc 51 lst))
+                   ccw (cdr (assoc 73 lst)))
+             (if (/= 0 ccw)
+               (setq items (cons (list 'F (hs:arc-segs c r a50 (hs:sweep a50 a51) 1)) items))
+               ;; CW yay: acilar normalde x eksenine gore aynalanmis saklanir.
+               ;; Emin olmak icin iki yorum da tutulur, komsu kenarlara gore secilir.
+               (setq items
+                 (cons (list 'A
+                             (hs:arc-segs c r (- a50) (hs:sweep a50 a51) -1)  ; aynali
+                             (hs:arc-segs c r a50 (hs:sweep a51 a50) -1))     ; dogrudan
+                       items))
+             )
+            )
+            ;; Elips (3) / spline (4)
+            (T (setq skipped (1+ skipped)))
+          )
+        )
+        (setq items (reverse items))
+      )
+    )
+    ;; Belirsiz CW yaylari cozumle
+    (setq fix nil)
+    (foreach it items
+      (if (eq (car it) 'F)
+        (foreach s (cadr it) (setq fix (cons (car s) (cons (cadr s) fix))))
+      )
+    )
+    (foreach it items
+      (setq segs
+        (append segs
+          (cond
+            ((eq (car it) 'F) (cadr it))
+            ((< (hs:score (caddr it) fix) (- (hs:score (cadr it) fix) 1e-6)) (caddr it))
+            (T (cadr it))
+          )
+        )
+      )
+    )
+  )
+  (if (> skipped 0)
+    (princ (strcat "\nNot: " (itoa skipped) " adet elips/spline kenar atlandi."))
+  )
+  segs
+)
+
+;; Bulge of the arc through 2D points a -> m -> c
+(defun hs:bulge-3p (a m c / cr al v1 v2)
+  (setq cr (- (* (- (car c) (car a)) (- (cadr m) (cadr a)))
+              (* (- (cadr c) (cadr a)) (- (car m) (car a)))))
+  (if (< (abs cr) 1e-9)
+    0.0                                   ; collinear -> straight segment
+    (progn
+      (setq v1 (mapcar '- a m)
+            v2 (mapcar '- c m)
+            al (abs (- (angle '(0 0) v1) (angle '(0 0) v2))))
+      (if (> al pi) (setq al (- (+ pi pi) al)))   ; interior angle at m
+      (* (if (< cr 0.0) 1.0 -1.0) (/ 1.0 (hs:tan (/ al 2.0))))
+    )
+  )
+)
+
+(defun hs:make-pline (seg / p1 p2 b nn o1 o2 om f1 f2 fm)
+  (setq p1 (car seg)
+        p2 (cadr seg)
+        b  (caddr seg)
+        nn (cadddr seg)
+        f1 (hs:2d p1)
+        f2 (hs:2d p2))
+  ;; Midpoint of the original arc, worked out in its own plane, then flattened
+  (if (/= b 0.0)
+    (progn
+      (setq o1 (trans p1 0 nn)
+            o2 (trans p2 0 nn)
+            om (list (+ (/ (+ (car o1) (car o2)) 2.0)
+                        (* (/ b 2.0) (- (cadr o2) (cadr o1))))
+                     (- (/ (+ (cadr o1) (cadr o2)) 2.0)
+                        (* (/ b 2.0) (- (car o2) (car o1))))
+                     (caddr o1))
+            fm (hs:2d (trans om nn 0))
+            b  (hs:bulge-3p f1 fm f2))
+    )
+  )
+  (if (> (distance f1 f2) 1e-9)
+    (entmakex
+      (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity") '(100 . "AcDbPolyline")
+            '(90 . 2) '(70 . 0) '(38 . 0.0)
+            (list 10 (car f1) (cadr f1))
+            (cons 42 b)
+            (list 10 (car f2) (cadr f2))
+            '(42 . 0.0)
+            '(210 0.0 0.0 1.0))
+    )
+  )
+)
+
+
+(defun HS:SegmentAtPick (hent ppt mat / ed nrm elev segs xw yw nn q v pel
+                                       s p1 p2 d bd best)
+  (setq ed   (entget hent)
+        nrm  (cdr (assoc 210 ed))
+        elev (caddr (cdr (assoc 10 ed))))
+  (if (null mat)
+    (setq mat '((1.0 0.0 0.0 0.0) (0.0 1.0 0.0 0.0) (0.0 0.0 1.0 0.0) (0.0 0.0 0.0 1.0)))
+  )
+  (setq segs (hs:hatch-segments ed))
+  ;; Donusmus duzlemin normali: donusmus OCS X ve Y eksenlerinin vektorel carpimi.
+  ;; Aynalanmis bloklarda normal de doner, boylece bulge isareti degismeden kalir.
+  (setq xw (hs:mxv mat (trans '(1.0 0.0 0.0) nrm 0 T))
+        yw (hs:mxv mat (trans '(0.0 1.0 0.0) nrm 0 T))
+        nn (hs:unit (hs:cross xw yw)))
+  (if (and segs nn)
+    (progn
+      ;; Pick noktasini segment duzlemine bakis yonunde izdus
+      (setq q (trans ppt 0 nn)
+            v (trans (trans (getvar "VIEWDIR") 1 0 T) 0 nn T)
+            pel (caddr (trans (hs:o2w (car (car segs)) nrm elev mat) 0 nn)))
+      (if (> (abs (caddr v)) 1e-9)
+        (setq q (mapcar '(lambda (a b) (+ a (* b (/ (- pel (caddr q)) (caddr v))))) q v))
+      )
+      (setq q (hs:2d q))
+      ;; En yakin segment
+      (foreach sg segs
+        (setq p1 (hs:o2w (car sg) nrm elev mat)
+              p2 (hs:o2w (cadr sg) nrm elev mat)
+              s  (list (hs:2d (trans p1 0 nn)) (hs:2d (trans p2 0 nn)) (caddr sg))
+              d  (hs:dist-seg q s))
+        (if (or (null bd) (< d bd))
+          (setq bd d best (list p1 p2 (caddr sg) nn))
+        )
+      )
+      (if (and best
+               (/= 0.0 (caddr best))
+               (or (> (abs (- (hs:len xw) (hs:len yw))) (* 1e-6 (hs:len xw)))
+                   (> (abs (hs:dot (hs:unit xw) (hs:unit yw))) 1e-6)))
+        (princ "\nUyari: blok olcegi esit degil, yay WCS'de elips olur; kopya yaklasiktir.")
+      )
+      best
+    )
+  )
 )
