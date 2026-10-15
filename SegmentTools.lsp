@@ -54,202 +54,226 @@
   (princ)
 )
 
-(defun c:AlOnSegment
-  (/ ss ent1 ent2
-     pt1 pt2 pt3 pt4
-     parent parents
-     ang1 ang2
-     tol
-     parallel
-     dx dy
-     perp dist srcPts tarPts)
+;;;;; align ;;;;;
 
-  (setq tol 1e-3)
-
-  ;; ------------------------------------------------------------
-  ;; Select target object
-  ;; ------------------------------------------------------------
-
-  (setq ent2 (nentselp "\nSelect an object to align to"))
-
-  (if ent2
-    (progn      
-      (setq ent1 (nentselp "\nSelect an object to align"))
-
-      (if ent1
-        (progn
-          (setq ss (ssadd))
-
-          ;; ------------------------------------------------------
-          ;; Get parent
-
-          (setq parents (cadddr ent1))
-          (if parents
-            (if (listp parents)
-              (setq parent (last parents))
-              (setq parent parents)
-            )            
-            (setq parent (car ent1))
-          )
-          (ssadd parent ss)
-        ;; ------------------------------------------------------------
-        ;; Get points
-        ;; ------------------------------------------------------------
-        (setq srcPts (getSegmentPoints ent1))
-        (setq tarPts (getSegmentPoints ent2))
-        (if (not (and srcPts tarPts))
-          (progn
-            (princ "\nNo segment under the pickbox.")
-            (exit)
-          )
-        )
-        (setq pt1 (car srcPts))
-        (setq pt2 (car tarPts))
-        (setq pt3 (cadr srcPts))
-        (setq pt4 (cadr tarPts))
-
-        ;; ------------------------------------------------------------
-        ;; Calculate direction vectors
-        ;; ------------------------------------------------------------
-
-        (setq dx1 (- (car pt3) (car pt1)))
-        (setq dy1 (- (cadr pt3) (cadr pt1)))
-
-        (setq dx2 (- (car pt4) (car pt2)))
-        (setq dy2 (- (cadr pt4) (cadr pt2)))
-
-        ;; ------------------------------------------------------------
-        ;; Ensure both point pairs have the same direction.
-        ;; If they point opposite ways, reverse the target pair.
-        ;; ------------------------------------------------------------
-
-        (if (< (+ (* dx1 dx2) (* dy1 dy2)) 0.0)
-          (progn
-            (setq temp pt2)
-            (setq pt2 pt4)
-            (setq pt4 temp)
-          )
-        )
-
-        ;; ------------------------------------------------------------
-        ;; Calculate directions
-        ;; ------------------------------------------------------------
-
-        (setq ang1 (angle pt1 pt3))
-        (setq ang2 (angle pt2 pt4))
-                 
-          (setq parallel
-            (<
-              (min
-                (abs (- ang1 ang2))
-                (abs (- (+ ang1 pi) ang2))
-                (abs (- (- ang1 pi) ang2))
-              )
-              tol
-            )
-          )
-
-          ;; ------------------------------------------------------------
-          ;; If parallel, move source only perpendicular to target
-          ;; ------------------------------------------------------------
-
-          (if parallel
-            (progn
-              ;; --------------------------------------------------------
-              ;; Perpendicular unit vector to target direction
-              ;;
-              ;; Target direction:
-              ;;   (cos ang2, sin ang2)
-              ;;
-              ;; Perpendicular:
-              ;;   (-sin ang2, cos ang2)
-              ;; --------------------------------------------------------
-
-              (setq perp
-                (list
-                  (sin ang2)
-                  (- (cos ang2))
-                  0.0
-                )
-              )
-
-              ;; --------------------------------------------------------
-              ;; Vector from source point to target point
-              ;; --------------------------------------------------------
-
-              (setq dx (- (car pt2) (car pt1)))
-              (setq dy (- (cadr pt2) (cadr pt1)))
-
-              ;; --------------------------------------------------------
-              ;; Signed perpendicular distance
-              ;; --------------------------------------------------------
-
-              (setq dist
-                (+
-                  (* dx (car perp))
-                  (* dy (cadr perp))
-                )
-              )
-
-              ;; --------------------------------------------------------
-              ;; Move source points perpendicular to the lines
-              ;;
-              ;; IMPORTANT:
-              ;; X/Y position along the line is preserved.
-              ;; Only the perpendicular component changes.
-              ;; --------------------------------------------------------
-
-              (setq pt2
-                (list
-                  (+ (car pt1) (* dist (car perp)))
-                  (+ (cadr pt1) (* dist (cadr perp)))
-                  (caddr pt1)
-                )
-              )
-
-              (setq pt4
-                (list
-                  (+ (car pt3) (* dist (car perp)))
-                  (+ (cadr pt3) (* dist (cadr perp)))
-                  (caddr pt3)
-                )
-              )
-
-              (princ
-                "\nParallel: moving only perpendicular to the line."
-              )
-            )
-
-            (princ
-              "\nObjects are not parallel: normal ALIGN."
-            )
-          )
-
-          ;; ------------------------------------------------------
-          ;; ALIGN
-          ;; ------------------------------------------------------
-          
-          (setq pt1 (trans pt1 0 1))
-          (setq pt2 (trans pt2 0 1))
-          (setq pt3 (trans pt3 0 1))
-          (setq pt4 (trans pt4 0 1))
-          
-          (command
-            "_.ALIGN"
-            ss
-            ""
-            "_non" pt1
-            "_non" pt2
-            "_non" pt3
-            "_non" pt4
-            ""
-            "_No"
-          )
-        )
+;; AlignOnSegment: source start/end -> target start/end (no scaling).
+;; If the segments point opposite ways the target pair is swapped,
+;; so the source never flips 180 degrees.
+(defun c:AlOnSegment ( / data ss src tar s1 s2 t1 t2 tmp)
+  (if (setq data (al:select))
+    (progn
+      (setq ss  (car data)
+            src (cadr data)
+            tar (caddr data)
+            s1  (car src)
+            s2  (cadr src)
+            t1  (car tar)
+            t2  (cadr tar))
+      (if (< (hs:dot (al:dir2d s1 s2) (al:dir2d t1 t2)) 0.0)
+        (setq tmp t1 t1 t2 t2 tmp)
       )
+      (al:align ss s1 t1 s2 t2)
     )
   )
   (princ)
+)
+
+;; AlignToSegment:
+;;   Parallel     -> source moves perpendicular to the segments onto the target line.
+;;   Not parallel -> source is rotated onto the target line around its pick point;
+;;                   the pick point lands on its perpendicular foot on the target line.
+(defun c:AlToSegment ( / data ss src tar s1 s2 fit ps foot ds dt len)
+  (if (setq data (al:select))
+    (progn
+      (setq ss   (car data)
+            src  (cadr data)
+            tar  (caddr data)
+            s1   (car src)
+            s2   (cadr src)
+            fit  (al:fit s1 s2 (car tar) (cadr tar) (cadddr data))
+            ps   (car fit)
+            foot (cadr fit)
+            ds   (caddr fit)
+            dt   (cadddr fit)
+            len  (distance (hs:2d s1) (hs:2d s2)))
+      (al:align ss
+                ps foot
+                (mapcar '+ ps (al:scale ds len))
+                (mapcar '+ foot (al:scale dt len)))
+    )
+  )
+  (princ)
+)
+
+;; AlignSegment: edits the picked segment itself instead of moving its object.
+;;   Source: LINE or LWPOLYLINE segment, not nested (it is modified).
+;;   Target: any segment getSegmentPoints understands, nested or not.
+;; Same rule as AlToSegment (parallel -> perpendicular move, otherwise rotate
+;; around the pick point), segment length is kept. Neighbouring polyline
+;; segments follow the moved vertices.
+(defun c:AlSegment ( / tar tarPts src srcPts obj typ fit ps foot ds dt
+                       n1 n2 ename i j res)
+  (cond
+    ((null (setq tar (nentselp "\nSelect the segment to align to: "))))
+    ((null (setq tarPts (getSegmentPoints tar)))
+     (princ "\nNo segment under the pickbox."))
+    ((< (distance (hs:2d (car tarPts)) (hs:2d (cadr tarPts))) 1e-9)
+     (princ "\nTarget segment has zero length."))
+    ((null (setq src (nentselp "\nSelect the segment to align: "))))
+    ((cadddr src)
+     (princ "\nSegment to align must not be nested."))
+    ((not (member (setq ename (car src)
+                        obj   (vlax-ename->vla-object ename)
+                        typ   (vla-get-ObjectName obj))
+                  '("AcDbLine" "AcDbPolyline")))
+     (princ "\nSegment to align must be a line or a polyline segment."))
+    ((null (setq srcPts (getSegmentPoints src)))
+     (princ "\nNo segment under the pickbox."))
+    ((< (distance (hs:2d (car srcPts)) (hs:2d (cadr srcPts))) 1e-9)
+     (princ "\nSource segment has zero length."))
+    (T
+     (setq fit  (al:fit (car srcPts) (cadr srcPts) (car tarPts) (cadr tarPts)
+                        (trans (cadr src) 1 0))
+           ps   (car fit)
+           foot (cadr fit)
+           ds   (caddr fit)
+           dt   (cadddr fit)
+           n1   (al:rotate (car srcPts)  ps foot ds dt)
+           n2   (al:rotate (cadr srcPts) ps foot ds dt))
+     (vla-StartUndoMark doc)
+     (setq res
+       (vl-catch-all-apply
+         '(lambda ()
+            (if (= typ "AcDbLine")
+              (progn
+                (vla-put-StartPoint obj (vlax-3d-point n1))
+                (vla-put-EndPoint   obj (vlax-3d-point n2))
+              )
+              (progn
+                ;; Same segment index as getSegFromPline; end vertex wraps when closed
+                (setq i (min (fix (vlax-curve-getParamAtPoint obj
+                                    (vlax-curve-getClosestPointTo obj (trans (cadr src) 1 0))))
+                             (1- (fix (vlax-curve-getEndParam obj))))
+                      j (if (= (1+ i) (cdr (assoc 90 (entget ename)))) 0 (1+ i)))
+                (al:put-vertex obj i (trans n1 0 ename))
+                (al:put-vertex obj j (trans n2 0 ename))
+              )
+            )
+            (vla-Update obj)
+          )
+       )
+     )
+     (vla-EndUndoMark doc)
+     (if (vl-catch-all-error-p res)
+       (princ (strcat "\nCould not modify the segment: "
+                      (vl-catch-all-error-message res)))
+     )
+    )
+  )
+  (princ)
+)
+
+;; Shared fit for AlToSegment / AlSegment (all WCS).
+;; Returns (ps foot ds dt): ps = pick point on the source line (source Z),
+;; foot = its perpendicular foot on the target line, ds/dt = 2D unit directions.
+;; When parallel dt = ds, so the result is a pure perpendicular move.
+(defun al:fit (s1 s2 t1 t2 pick / ds dt ps foot)
+  (setq ds (al:dir2d s1 s2)
+        dt (al:dir2d t1 t2))
+  (if (< (hs:dot ds dt) 0.0)
+    (setq dt (mapcar '- dt))
+  )
+  ;; Pick point projected onto the source line (keeps the source Z)
+  (setq ps (al:project pick s1 ds)
+        ps (list (car ps) (cadr ps) (al:z s1)))
+  ;; Its perpendicular foot on the target line, at the same Z
+  (setq foot (al:project ps t1 dt)
+        foot (list (car foot) (cadr foot) (caddr ps)))
+  ;; Angle between the segments (radians)
+  (if (< (abs (atan (- (* (car ds) (cadr dt)) (* (cadr ds) (car dt)))
+                    (hs:dot ds dt)))
+         1e-3)
+    (progn
+      (princ "\nParallel: moving perpendicular to the segments.")
+      (setq dt ds)                    ; no rotation, pure perpendicular move
+    )
+    (princ "\nNot parallel: aligning around the pick point.")
+  )
+  (list ps foot ds dt)
+)
+
+;; Rigid 2D move of p: ps -> foot, direction ds -> dt. Keeps the Z of p.
+(defun al:rotate (p ps foot ds dt / c s x y)
+  (setq c (hs:dot ds dt)
+        s (- (* (car ds) (cadr dt)) (* (cadr ds) (car dt)))
+        x (- (car p) (car ps))
+        y (- (cadr p) (cadr ps)))
+  (list (+ (car foot) (- (* c x) (* s y)))
+        (+ (cadr foot) (* s x) (* c y))
+        (al:z p))
+)
+
+;; LWPOLYLINE vertex i <- OCS point p (2D)
+(defun al:put-vertex (obj i p / sa)
+  (setq sa (vlax-make-safearray vlax-vbDouble '(0 . 1)))
+  (vlax-safearray-fill sa (list (car p) (cadr p)))
+  (vla-put-Coordinate obj i (vlax-make-variant sa))
+)
+
+;; Prompts for target and source segments.
+;; Returns (ss srcPts tarPts srcPickWCS) or nil
+(defun al:select ( / tar src parents ss srcPts tarPts)
+  (cond
+    ((null (setq tar (nentselp "\nSelect the segment to align to: "))))
+    ((null (setq tarPts (getSegmentPoints tar)))
+     (princ "\nNo segment under the pickbox."))
+    ((null (setq src (nentselp "\nSelect the segment to align: "))))
+    ((null (setq srcPts (getSegmentPoints src)))
+     (princ "\nNo segment under the pickbox."))
+    ((< (distance (hs:2d (car srcPts)) (hs:2d (cadr srcPts))) 1e-9)
+     (princ "\nSource segment has zero length."))
+    ((< (distance (hs:2d (car tarPts)) (hs:2d (cadr tarPts))) 1e-9)
+     (princ "\nTarget segment has zero length."))
+    (T
+     ;; Move the outermost owner (block reference) when the pick was nested
+     (setq parents (cadddr src)
+           ss      (ssadd))
+     (ssadd (cond ((and parents (listp parents)) (last parents))
+                  (parents)
+                  ((car src)))
+            ss)
+     (list ss srcPts tarPts (trans (cadr src) 1 0))
+    )
+  )
+)
+
+;; WCS points -> UCS, then ALIGN without scaling
+(defun al:align (ss a1 b1 a2 b2)
+  (command
+    "_.ALIGN" ss ""
+    "_non" (trans a1 0 1)
+    "_non" (trans b1 0 1)
+    "_non" (trans a2 0 1)
+    "_non" (trans b2 0 1)
+    ""
+    "_No"
+  )
+)
+
+;; 2D unit direction a -> b as (x y 0.0)
+(defun al:dir2d (a b)
+  (hs:unit (list (- (car b) (car a)) (- (cadr b) (cadr a)) 0.0))
+)
+
+(defun al:scale (v k) (mapcar '(lambda (x) (* x k)) v))
+
+(defun al:z (p) (cond ((caddr p)) (0.0)))
+
+;; 2D projection of p onto the line through a with unit direction d
+(defun al:project (p a d / k)
+  (setq k (+ (* (- (car p) (car a)) (car d))
+             (* (- (cadr p) (cadr a)) (cadr d))))
+  (list (+ (car a) (* k (car d))) (+ (cadr a) (* k (cadr d))) 0.0)
 )
 
 ;;;;; segment extraction ;;;;;
