@@ -82,7 +82,7 @@
 ;;   Parallel     -> source moves perpendicular to the segments onto the target line.
 ;;   Not parallel -> source is rotated onto the target line around its pick point;
 ;;                   the pick point lands on its perpendicular foot on the target line.
-(defun c:AlToSegment ( / data ss src tar s1 s2 fit ps foot ds dt len)
+(defun c:TSegmentAlign ( / data ss src tar s1 s2 fit ps foot ds dt len)
   (if (setq data (al:select))
     (progn
       (setq ss   (car data)
@@ -108,10 +108,10 @@
 ;; AlignSegment: edits the picked segment itself instead of moving its object.
 ;;   Source: LINE or LWPOLYLINE segment, not nested (it is modified).
 ;;   Target: any segment getSegmentPoints understands, nested or not.
-;; Same rule as AlToSegment (parallel -> perpendicular move, otherwise rotate
+;; Same rule as TSegmentAlign (parallel -> perpendicular move, otherwise rotate
 ;; around the pick point), segment length is kept. Neighbouring polyline
 ;; segments follow the moved vertices.
-(defun c:AlSegment ( / tar tarPts src srcPts obj typ fit ps foot ds dt
+(defun c:ASegment ( / tar tarPts src srcPts obj typ fit ps foot ds dt
                        n1 n2 ename i j res)
   (cond
     ((null (setq tar (nentselp "\nSelect the segment to align to: "))))
@@ -173,7 +173,7 @@
   (princ)
 )
 
-;; Shared fit for AlToSegment / AlSegment (all WCS).
+;; Shared fit for TSegmentAlign / AlSegment (all WCS).
 ;; Returns (ps foot ds dt): ps = pick point on the source line (source Z),
 ;; foot = its perpendicular foot on the target line, ds/dt = 2D unit directions.
 ;; When parallel dt = ds, so the result is a pure perpendicular move.
