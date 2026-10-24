@@ -105,13 +105,31 @@
   (princ)
 )
 
+(defun c:TxAlign ( / txAng ang sel p1 p2 seg txEn)
+  (setq sel (nentselp "\nSelect a segment for aligning the text"))
+  (setq seg (getSegmentPoints sel))
+  (setq p1 (car seg) p2 (cadr seg))
+  
+  (setq ang (angle p1 p2))
+  (if (or (> ang (* 0.5 pi)) (<= ang (* 1.5 pi)))
+      (setq ang (+ ang pi))
+  )
+  
+  (setq sel (entsel "\nSelect the text to be aligned"))
+  (setq txEn (entget (car sel)))
+  (setq txAng (assoc 50 txEn))
+  
+  (setq txEn (subst (cons 50 ang) txAng txEn))
+  (entmod txEn)
+)
+
 ;; AlignSegment: edits the picked segment itself instead of moving its object.
 ;;   Source: LINE or LWPOLYLINE segment, not nested (it is modified).
 ;;   Target: any segment getSegmentPoints understands, nested or not.
 ;; Same rule as TSegmentAlign (parallel -> perpendicular move, otherwise rotate
 ;; around the pick point), segment length is kept. Neighbouring polyline
 ;; segments follow the moved vertices.
-(defun c:ASegment ( / tar tarPts src srcPts obj typ fit ps foot ds dt
+(defun c:ASgment ( / tar tarPts src srcPts obj typ fit ps foot ds dt
                        n1 n2 ename i j res)
   (cond
     ((null (setq tar (nentselp "\nSelect the segment to align to: "))))
