@@ -458,8 +458,8 @@
   (princ)
 )
 
-(defun c:PLADD () (pladd:run acUnion))
-(defun c:PLREMOVE () (pladd:run acSubtraction))
+(defun c:PD () (pladd:run acUnion))
+(defun c:PM () (pladd:run acSubtraction))
 
-(princ "\nPolylineTools loaded. Commands: DBVP (double vertex), PLADD / PLREMOVE (add / remove rectangle).")
+(princ "\nPolylineTools loaded. Commands: DBVP (double vertex), PDD / PREMOVE (add / remove rectangle).")
 (princ)
