@@ -4,7 +4,7 @@
       (cond
         ((= mode "A")
           (entdel (caar numbered))
-          (setq lastPt (cadar numbered))
+          (setq lastPt (trans (cadar numbered) 0 1))
         )
         ((= mode "M")
           (setq prevEntity (entget (car (car numbered))))
@@ -54,7 +54,7 @@
         )        
         (setq number (+ number increment))
         (setq numbered (cons (list (entlast) target) numbered))
-        (setq lastPt (trans target 1 0))
+        (setq lastPt (trans target 0 1))
       )
       ((= addMode "B")
         (setq bObj
@@ -76,10 +76,10 @@
         )
         (setAttribute bRef)
         (setq number (+ number increment))
-        (setq lastPt (trans target 1 0))
+        (setq lastPt (trans target 0 1))
         (setq numbered
           (cons
-            (list (vlax-vla-object->ename bRef) lastPt)
+            (list (vlax-vla-object->ename bRef) target)
             numbered
           )
         )
@@ -159,7 +159,7 @@
     modifyMode nil
   )
 )
-(defun c:numAuto ( / choice)
+(defun c:numbering ( / choice)
   (setq lastPt nil)
   (if mode
     (progn
@@ -243,7 +243,7 @@
 )
 
 (defun setAttribute (blockRef / attrs attName)
-  (setq attrs (vlax-invoke blockRef 'GetAttributes))
+  (setq attrs (vlax-invoke blockRef 'GetAttributes)) ;'
   (setq attName (cdr (assoc 2 sample)))
   (foreach att attrs
     (if (= (strcase (vla-get-TagString att))
