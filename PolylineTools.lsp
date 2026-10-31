@@ -461,5 +461,180 @@
 (defun c:PD () (pladd:run acUnion))
 (defun c:PM () (pladd:run acSubtraction))
 
-(princ "\nPolylineTools loaded. Commands: DBVP (double vertex), PDD / PREMOVE (add / remove rectangle).")
+;;; ------------------------------------------------------------------
+;;; Command: PLDEL
+;;; Select a lightweight polyline, draw a window, and remove its vertices
+;;; inside the window. Newly joined segments are straightened.
+;;; ------------------------------------------------------------------
+
+(defun plv:zero-bulge (chunk / out g inserted)
+  (if (assoc 42 chunk)
+    (dblv:put 42 0.0 chunk)
+    (progn
+      (foreach g chunk
+        (if (and (= (car g) 91) (not inserted))
+          (progn
+            (setq out (cons '(42 . 0.0) out)
+                  inserted t)
+          )
+        )
+        (setq out (cons g out))
+      )
+      (if (not inserted) (setq out (cons '(42 . 0.0) out)))
+      (reverse out)
+    )
+  )
+)
+
+(defun plv:delete-window (ent p1 p2 / ed obj n closed
+                           xmin xmax ymin ymax head chunks tail cur
+                           g i worldPt ucsPt keep removed minv pos idx nxt c newc)
+  (setq ed     (entget ent)
+        obj    (vlax-ename->vla-object ent)
+        n      (cdr (assoc 90 ed))
+        closed (= 1 (logand 1 (cdr (assoc 70 ed))))
+        xmin   (min (car p1) (car p2))
+        xmax   (max (car p1) (car p2))
+        ymin   (min (cadr p1) (cadr p2))
+        ymax   (max (cadr p1) (cadr p2)))
+
+  ;; Split DXF data into header, per-vertex chunks, and trailing data.
+  (foreach g ed
+    (cond
+      ((= (car g) 10)
+       (if cur (setq chunks (cons (reverse cur) chunks)))
+       (setq cur (list g)))
+      ((and cur (member (car g) '(40 41 42 91)))
+       (setq cur (cons g cur)))
+      (cur (setq tail (cons g tail)))
+      (t (setq head (cons g head)))
+    )
+  )
+  (setq chunks (reverse (cons (reverse cur) chunks))
+        head   (reverse head)
+        tail   (reverse tail))
+
+  ;; Curve points are returned in WCS; transform them to the current UCS,
+  ;; which is also the coordinate system returned by getpoint/getcorner.
+  (setq i 0)
+  (repeat n
+    (setq worldPt (vlax-curve-getPointAtParam obj i)
+          ucsPt   (trans worldPt 0 1))
+    (if (and (<= xmin (car ucsPt) xmax)
+             (<= ymin (cadr ucsPt) ymax))
+      (setq removed (cons i removed))
+      (setq keep (cons i keep))
+    )
+    (setq i (1+ i))
+  )
+  (setq keep (reverse keep)
+        removed (reverse removed))
+
+  (cond
+    ((null removed)
+     (princ "\nNo vertices found in the selection window."))
+    (t
+     (setq minv (if closed 3 2))
+     (if (< (length keep) minv)
+       (princ (strcat "\nCannot remove those vertices; a "
+                      (if closed "closed" "open")
+                      " polyline must retain at least " (itoa minv) " vertices."))
+       (progn
+         ;; Clear the bulge where deletion makes formerly non-adjacent
+         ;; vertices neighbors, so each new connecting segment is straight.
+         (setq pos 0)
+         (foreach idx keep
+           (setq nxt (if (< pos (1- (length keep)))
+                       (nth (1+ pos) keep)
+                       (if closed (car keep))))
+           (setq c (nth idx chunks))
+           (if (and nxt
+                    (/= nxt (if (= idx (1- n)) 0 (1+ idx))))
+             (setq c (plv:zero-bulge c))
+           )
+           (setq newc (cons c newc)
+                 pos (1+ pos))
+         )
+         (setq newc (reverse newc)
+               ed (append (dblv:put 90 (length keep) head)
+                          (apply 'append newc)
+                          tail))
+         (if (entmod ed)
+           (progn
+             (entupd ent)
+             (princ (if (= (length removed) 1)
+                      "\n1 vertex deleted."
+                      (strcat "\n" (itoa (length removed)) " vertices deleted.")))
+           )
+           (princ "\nFailed to modify polyline.")
+         )
+       )
+     )
+    )
+  )
+)
+
+(defun plv:run (/ *error* doc undo sel ent p1 p2)
+  (setq doc (vla-get-ActiveDocument (vlax-get-acad-object)))
+
+  (defun *error* (msg)
+    (if undo (vla-EndUndoMark doc))
+    (if (not (wcmatch (strcase msg) "*CANCEL*,*QUIT*,*EXIT*,*BREAK*"))
+      (princ (strcat "\nError: " msg))
+    )
+    (princ)
+  )
+
+  ;; Use one preselected lightweight polyline when available.
+  (if (and (setq sel (ssget "_I"))
+           (= (sslength sel) 1)
+           (= (cdr (assoc 0 (entget (ssname sel 0)))) "LWPOLYLINE"))
+    (setq ent (ssname sel 0))
+  )
+
+  ;; Otherwise, prompt for a lightweight polyline.
+  (while (not ent)
+    (setq sel (entsel "\nSelect lightweight polyline: "))
+    (cond
+      ((null sel)
+       (if (= (getvar 'ERRNO) 7) (princ "\nMissed, try again.") (exit)))
+      ((/= (cdr (assoc 0 (entget (car sel)))) "LWPOLYLINE")
+       (princ "\nThat is not a lightweight polyline."))
+      (t (setq ent (car sel)))
+    )
+  )
+
+  (vla-StartUndoMark doc)
+  (setq undo t)
+  (sssetfirst nil (ssadd ent))
+  ;; Keep accepting selection windows until Enter at the first-corner prompt.
+  (while (setq p1 (getpoint "\nFirst corner of vertex selection window <done>: "))
+    (if (setq p2 (getcorner p1 "\nOpposite corner: "))
+      (progn
+        (plv:delete-window ent p1 p2)
+        (sssetfirst nil (ssadd ent))
+      )
+    )
+  )
+  (vla-EndUndoMark doc)
+  (setq undo nil)
+  (princ)
+)
+
+(defun c:PDEL () (plv:run))
+
+(defun c:DT (/ mode)
+  (while T
+    (initget "+ - --")
+    (setq mode (getkword "\nSelect mode [+, -, --] <->: "))
+    (cond
+      ((or (null mode) (= mode "-")) (pladd:run acSubtraction))
+      ((= mode "+") (pladd:run acUnion))
+      ((= mode "--") (plv:run))
+    )
+  )
+  (princ)
+)
+
+(princ "\nPolylineTools loaded. Commands: DBVP, PD (add rectangle), PM (remove rectangle), PDEL (delete vertices), DT (choose mode).")
 (princ)
