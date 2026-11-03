@@ -143,15 +143,19 @@
 )
 
 ;;; ------------------------------------------------------------------
-;;; Commands: PLADD / PLREMOVE
-;;; Select a closed lightweight polyline, then draw rectangles.
-;;; PLADD merges each rectangle into the polyline boundary (union),
-;;; PLREMOVE cuts each rectangle out of it (subtraction), like ArchiCAD's
+;;; Commands: PD / PM
+;;; Select a lightweight polyline, then draw rectangles.
+;;; PD merges each rectangle into the polyline boundary (union),
+;;; PM cuts each rectangle out of it (subtraction), like ArchiCAD's
 ;;; add / subtract polygon modes. Press Enter to finish.
 ;;; The original polyline keeps its handle and properties. If the result
 ;;; has holes or splits into several pieces, the extra loops are added as
-;;; separate polylines with the same properties (the largest loop stays
-;;; on the original polyline).
+;;; separate closed polylines with the same properties (the largest loop
+;;; stays on the original polyline).
+;;; An open polyline is handled as if it were closed by a straight segment
+;;; between its end points; that segment is left out again afterwards, so
+;;; the polyline stays open with the same end points. The rectangle must
+;;; not cover an end point or cross the gap between the end points.
 ;;; ------------------------------------------------------------------
 
 (setq *pladd:fuzz* 1e-6)
@@ -305,8 +309,81 @@
   (mapcar '(lambda (p q b) (list p q b)) pts (append (cdr pts) (list (car pts))) bl)
 )
 
-;; Replace the vertices of polyline ent with the loop
-(defun pladd:apply (ent loop / ed head tail seen)
+;; Split segment s at a point pt strictly inside it; returns (s1 s2) or nil
+(defun pladd:split (s pt / p1 p2 b th cen del)
+  (setq p1 (car s) p2 (cadr s) b (caddr s))
+  (cond
+    ((or (equal pt p1 *pladd:fuzz*) (equal pt p2 *pladd:fuzz*)) nil)
+    ((equal b 0.0 1e-12)
+     (if (equal (+ (distance p1 pt) (distance pt p2)) (distance p1 p2) *pladd:fuzz*)
+       (list (list p1 pt 0.0) (list pt p2 0.0))))
+    (t
+     (setq th  (* 4.0 (atan b))
+           cen (dblv:center p1 p2 b)
+           del (- (angle cen pt) (angle cen p1)))
+     (if (> b 0)
+       (while (< del 0) (setq del (+ del (* 2 pi))))
+       (while (> del 0) (setq del (- del (* 2 pi))))
+     )
+     (if (and (equal (distance cen pt) (distance cen p1) *pladd:fuzz*)
+              (< (abs del) (abs th)))
+       (list (list p1 pt (dblv:tan (/ del 4.0)))
+             (list pt p2 (dblv:tan (/ (- th del) 4.0))))))
+  )
+)
+
+;; Rotate a loop so it starts at pt (splitting a segment there if needed);
+;; nil if pt is not on the loop
+(defun pladd:start-at (loop pt / before after sp)
+  (foreach s loop
+    (cond
+      (after (setq after (cons s after)))
+      ((equal (car s) pt *pladd:fuzz*) (setq after (list s)))
+      ((setq sp (pladd:split s pt))
+       (setq before (cons (car sp) before) after (list (cadr sp))))
+      (t (setq before (cons s before)))
+    )
+  )
+  (if after (append (reverse after) (reverse before)))
+)
+
+;; Closed result loop -> open path from p0 to pn (the original end points).
+;; The straight gap pn -> p0 must still be part of the loop; nil otherwise
+(defun pladd:reopen (loop p0 pn / gap)
+  (cond
+    ((equal p0 pn *pladd:fuzz*)
+     ;; end points coincide: keep the loop, starting at the old start if possible
+     (cond ((pladd:start-at loop p0)) (loop)))
+    ((setq loop (pladd:start-at loop p0))
+     ;; start at pn, then the segments up to p0 are the gap
+     (setq loop (pladd:start-at loop pn))
+     (while (and loop (not (equal (car (car loop)) p0 *pladd:fuzz*)))
+       (setq gap  (cons (car loop) gap)
+             loop (cdr loop))
+     )
+     (if (and loop
+              gap
+              (vl-every '(lambda (s) (equal (caddr s) 0.0 1e-12)) gap)
+              (equal (apply '+ (mapcar '(lambda (s) (distance (car s) (cadr s))) gap))
+                     (distance pn p0)
+                     *pladd:fuzz*))
+       loop))
+  )
+)
+
+;; Polyline from a loop of segments, closed (in OCS of nrm at elevation elev)
+(defun pladd:make (loop nrm elev)
+  (if (cdr loop)
+    (entmakex (append (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity") '(100 . "AcDbPolyline")
+                            (cons 90 (length loop)) '(70 . 1) (cons 38 elev))
+                      (apply 'append
+                             (mapcar '(lambda (s) (list (cons 10 (car s)) (cons 42 (caddr s)))) loop))
+                      (list (cons 210 nrm)))))
+)
+
+;; Replace the vertices of polyline ent with the loop; when closed is nil
+;; the loop is an open path and the polyline is made open
+(defun pladd:apply (ent loop closed / ed head tail seen flag)
   (setq ed (entget ent))
   (foreach g ed
     (cond
@@ -317,52 +394,62 @@
     )
   )
   (setq head (reverse head)
-        head (dblv:put 90 (length loop) head)
-        head (dblv:put 70 (logior 1 (cdr (assoc 70 head))) head))
+        flag (cdr (assoc 70 head))
+        head (dblv:put 90 (+ (length loop) (if closed 0 1)) head)
+        head (dblv:put 70 (if closed (logior 1 flag) (logand (~ 1) flag)) head))
   (entmod (append head
                   (apply 'append
                          (mapcar '(lambda (s) (list (cons 10 (car s)) (cons 42 (caddr s)))) loop))
+                  (if (not closed) (list (cons 10 (cadr (last loop))) '(42 . 0.0)))
                   (reverse tail)))
   (entupd ent)
 )
 
 ;; Add (mode acUnion) or remove (mode acSubtraction) the rectangle p1-p2
-;; (UCS points) to/from closed polyline ent
-(defun pladd:apply-rect (ent p1 p2 mode / doc obj ed nrm elev blk q rect robj res regA regB
-                       inter aA aB aU loops outer holes sgn new)
-  (setq doc  (vla-get-ActiveDocument (vlax-get-acad-object))
-        obj  (vlax-ename->vla-object ent)
-        ed   (entget ent)
-        nrm  (cond ((cdr (assoc 210 ed))) ('(0.0 0.0 1.0)))
-        elev (cond ((cdr (assoc 38 ed))) (0.0))
-        blk  (vla-ObjectIDToObject doc (vla-get-OwnerID obj))
-        q    (mapcar '(lambda (p) (setq p (trans p 1 ent)) (list (car p) (cadr p)))
-                     (list p1
-                           (list (car p2) (cadr p1) (caddr p1))
-                           (list (car p2) (cadr p2) (caddr p1))
-                           (list (car p1) (cadr p2) (caddr p1)))))
+;; (UCS points) to/from polyline ent
+(defun pladd:apply-rect (ent p1 p2 mode / doc obj ed nrm elev blk open loop0 p0 pn q rect robj
+                       src tpl res regA regB inter aA aB aU loops outer path sgn new)
+  (setq doc   (vla-get-ActiveDocument (vlax-get-acad-object))
+        obj   (vlax-ename->vla-object ent)
+        ed    (entget ent)
+        nrm   (cond ((cdr (assoc 210 ed))) ('(0.0 0.0 1.0)))
+        elev  (cond ((cdr (assoc 38 ed))) (0.0))
+        blk   (vla-ObjectIDToObject doc (vla-get-OwnerID obj))
+        open  (/= 1 (logand 1 (cdr (assoc 70 ed))))
+        loop0 (pladd:pl-loop ed)
+        p0    (car (car loop0))
+        pn    (car (last loop0))
+        q     (mapcar '(lambda (p) (setq p (trans p 1 ent)) (list (car p) (cadr p)))
+                      (list p1
+                            (list (car p2) (cadr p1) (caddr p1))
+                            (list (car p2) (cadr p2) (caddr p1))
+                            (list (car p1) (cadr p2) (caddr p1)))))
   (cond
     ((or (equal (car q) (cadr q) *pladd:fuzz*) (equal (cadr q) (caddr q) *pladd:fuzz*))
      (princ "\nRectangle has zero size."))
-    ((not (setq rect (entmakex (append (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity")
-                                             '(100 . "AcDbPolyline") '(90 . 4) '(70 . 1)
-                                             (cons 38 elev))
-                                       (mapcar '(lambda (p) (cons 10 p)) q)
-                                       (list (cons 210 nrm))))))
+    ((not (setq rect (pladd:make (mapcar '(lambda (a b) (list a b 0.0)) q (append (cdr q) (list (car q))))
+                                 nrm elev)))
      (princ "\nCould not create the rectangle."))
     (t
      (setq robj        (vlax-ename->vla-object rect)
            *pladd:tmp* (list robj)
-           res         (vl-catch-all-apply 'vlax-invoke (list blk 'AddRegion (list obj))))
+           src         obj)
+     ;; an open polyline is worked on as a temporary closed copy
+     (if open
+       (if (setq tpl (pladd:make (pladd:simplify loop0) nrm elev))
+         (setq src         (vlax-ename->vla-object tpl)
+               *pladd:tmp* (cons src *pladd:tmp*))
+         (setq src nil)))
+     (if src (setq res (vl-catch-all-apply 'vlax-invoke (list blk 'AddRegion (list src)))))
      (cond
-       ((or (vl-catch-all-error-p res) (/= (length res) 1))
-        (princ "\nPolyline cannot be converted to a region (self-intersecting?)."))
+       ((or (null res) (vl-catch-all-error-p res) (/= (length res) 1))
+        (princ "\nPolyline cannot be converted to a region (self-intersecting or no area?)."))
        (t
         (setq regA        (car res)
               *pladd:tmp* (cons regA *pladd:tmp*)
               regB        (car (vlax-invoke blk 'AddRegion (list robj)))
               *pladd:tmp* (cons regB *pladd:tmp*)
-              inter       (vlax-invoke obj 'IntersectWith robj acExtendNone)
+              inter       (vlax-invoke src 'IntersectWith robj acExtendNone)
               aA          (vla-get-Area regA)
               aB          (vla-get-Area regB))
         (vla-Boolean regA mode regB)
@@ -380,23 +467,32 @@
                       loops (pladd:chain loops)))
            (princ "\nCould not rebuild the boundary from the union result."))
           (t
-           (setq loops (mapcar 'pladd:simplify loops)
-                 outer (car loops))
-           (foreach l (cdr loops)
-             (if (> (abs (pladd:area l)) (abs (pladd:area outer))) (setq outer l))
+           ;; largest loop first, all with the original winding direction
+           (setq sgn   (minusp (pladd:area loop0))
+                 loops (mapcar '(lambda (l)
+                                  (setq l (pladd:simplify l))
+                                  (if (/= sgn (minusp (pladd:area l))) (reverse (mapcar 'pladd:rev l)) l))
+                               loops)
+                 loops (vl-sort loops '(lambda (a b) (> (abs (pladd:area a)) (abs (pladd:area b))))))
+           (if open
+             ;; the loop that still holds both end points and the gap becomes the open polyline
+             (foreach l loops
+               (if (and (not outer) (setq path (pladd:reopen l p0 pn))) (setq outer l)))
+             (setq outer (car loops)
+                   path  outer))
+           (cond
+             ((not outer)
+              (princ "\nRectangle covers an end point of the open polyline or crosses the gap between its end points - nothing changed."))
+             (t
+              (setq loops (vl-remove outer loops))
+              (pladd:apply ent path (not open))
+              (foreach h loops
+                (setq new (vla-Copy obj))
+                (pladd:apply (vlax-vla-object->ename new) h t)
+              )
+              (princ (strcat (if (= mode acUnion) "\nRectangle added." "\nRectangle removed.")
+                             (if loops (strcat " " (itoa (length loops)) " extra polyline(s) created.") ""))))
            )
-           (setq holes (vl-remove outer loops)
-                 sgn   (minusp (pladd:area (pladd:pl-loop ed))))
-           ;; keep the original winding direction
-           (if (/= sgn (minusp (pladd:area outer)))
-             (setq outer (reverse (mapcar 'pladd:rev outer))))
-           (pladd:apply ent outer)
-           (foreach h holes
-             (setq new (vla-Copy obj))
-             (pladd:apply (vlax-vla-object->ename new) h)
-           )
-           (princ (strcat (if (= mode acUnion) "\nRectangle added." "\nRectangle removed.")
-                          (if holes (strcat " " (itoa (length holes)) " extra polyline(s) created.") "")))
           )
         )
        )
@@ -406,7 +502,7 @@
   )
 )
 
-;; Shared command loop for PLADD / PLREMOVE
+;; Shared command loop for PD / PM
 (defun pladd:run (mode / *error* doc undo sel ent p1 p2)
   (setq doc (vla-get-ActiveDocument (vlax-get-acad-object))
         *pladd:tmp* nil)
@@ -420,24 +516,21 @@
     (princ)
   )
 
-  ;; --- Use a preselected closed polyline if there is exactly one ---
+  ;; --- Use a preselected polyline if there is exactly one ---
   (if (and (setq sel (ssget "_I"))
            (= (sslength sel) 1)
-           (= (cdr (assoc 0 (entget (ssname sel 0)))) "LWPOLYLINE")
-           (= 1 (logand 1 (cdr (assoc 70 (entget (ssname sel 0)))))))
+           (= (cdr (assoc 0 (entget (ssname sel 0)))) "LWPOLYLINE"))
     (setq ent (ssname sel 0))
   )
 
-  ;; --- Otherwise select a closed polyline ---
+  ;; --- Otherwise select a polyline (closed or open) ---
   (while (not ent)
-    (setq sel (entsel "\nSelect closed polyline: "))
+    (setq sel (entsel "\nSelect polyline: "))
     (cond
       ((null sel)
        (if (= (getvar 'ERRNO) 7) (princ "\nMissed, try again.") (exit)))
       ((/= (cdr (assoc 0 (entget (car sel)))) "LWPOLYLINE")
        (princ "\nThat is not a (lightweight) polyline."))
-      ((/= 1 (logand 1 (cdr (assoc 70 (entget (car sel))))))
-       (princ "\nPolyline must be closed."))
       (t (setq ent (car sel)))
     )
   )
@@ -623,16 +716,20 @@
 
 (defun c:PDEL () (plv:run))
 
+;; Runs one mode, then ends the command and queues DT again.
+;; Associative hatches only follow their boundary when the command ends,
+;; so each Enter that finishes a mode updates them before DT restarts.
+;; The polyline stays selected, so the next mode works on it directly.
+;; Esc, or Enter at the polyline selection prompt, stops DT.
 (defun c:DT (/ mode)
-  (while T
-    (initget "+ - --")
-    (setq mode (getkword "\nSelect mode [+, -, --] <->: "))
-    (cond
-      ((or (null mode) (= mode "-")) (pladd:run acSubtraction))
-      ((= mode "+") (pladd:run acUnion))
-      ((= mode "--") (plv:run))
-    )
+  (initget "+ - --")
+  (setq mode (getkword "\nSelect mode [+, -, --] <->: "))
+  (cond
+    ((or (null mode) (= mode "-")) (pladd:run acSubtraction))
+    ((= mode "+") (pladd:run acUnion))
+    ((= mode "--") (plv:run))
   )
+  (vla-SendCommand (vla-get-ActiveDocument (vlax-get-acad-object)) "DT ")
   (princ)
 )
 
