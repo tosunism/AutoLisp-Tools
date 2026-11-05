@@ -59,8 +59,9 @@
 ;; AlignOnSegment: source start/end -> target start/end (no scaling).
 ;; If the segments point opposite ways the target pair is swapped,
 ;; so the source never flips 180 degrees.
-(defun c:AlOnSegment ( / data ss src tar s1 s2 t1 t2 tmp)
-  (if (setq data (al:select))
+(defun c:AlOnSegment ( / *error* al:hl data ss src tar s1 s2 t1 t2 tmp)
+  (setq *error* al:error)
+  (if (setq data (al:select T))
     (progn
       (setq ss  (car data)
             src (cadr data)
@@ -75,6 +76,7 @@
       (al:align ss s1 t1 s2 t2)
     )
   )
+  (al:highlight nil)
   (princ)
 )
 
@@ -82,8 +84,11 @@
 ;;   Parallel     -> source moves perpendicular to the segments onto the target line.
 ;;   Not parallel -> source is rotated onto the target line around its pick point;
 ;;                   the pick point lands on its perpendicular foot on the target line.
-(defun c:TSegmentAlign ( / data ss src tar s1 s2 fit ps foot ds dt len)
-  (if (setq data (al:select))
+;; A preselection is aligned as a whole; otherwise P at the first prompt loads
+;; the previous selection set.
+(defun c:TSegmentAlign ( / *error* al:hl data ss src tar s1 s2 fit ps foot ds dt len)
+  (setq *error* al:error)
+  (if (setq data (al:select T))
     (progn
       (setq ss   (car data)
             src  (cadr data)
@@ -102,6 +107,7 @@
                 (mapcar '+ foot (al:scale dt len)))
     )
   )
+  (al:highlight nil)
   (princ)
 )
 
@@ -239,10 +245,39 @@
 )
 
 ;; Prompts for target and source segments.
+;; useSet = T: a preselection (pickfirst) is used as the objects to align, and
+;;   when there is none the target prompt offers [Previous] to load the
+;;   previous selection set. Without either, the source segment's owner moves.
+;;   The set in use is kept highlighted in al:hl (caller declares it local).
 ;; Returns (ss srcPts tarPts srcPickWCS) or nil
-(defun al:select ( / tar src parents ss srcPts tarPts)
+(defun al:select (useSet / tar src parents ss srcPts tarPts)
+  (if (and useSet (setq ss (ssget "_I")))
+    (progn
+      ;; Clear pickfirst so ALIGN still asks for objects
+      (sssetfirst nil nil)
+      (al:highlight ss)
+      (princ (strcat "\n" (itoa (sslength ss)) " preselected object(s) will be aligned."))
+    )
+  )
+  ;; Target prompt; "Previous" loads the previous selection and asks again
+  (while
+    (progn
+      (if (and useSet (null ss)) (initget "Previous"))
+      (setq tar (nentselp (if (and useSet (null ss))
+                            "\nSelect the segment to align to or [Previous selection]: "
+                            "\nSelect the segment to align to: ")))
+      (= tar "Previous")
+    )
+    (if (setq ss (ssget "_P"))
+      (progn
+        (al:highlight ss)
+        (princ (strcat "\n" (itoa (sslength ss)) " object(s) from the previous selection will be aligned."))
+      )
+      (princ "\nNo previous selection set.")
+    )
+  )
   (cond
-    ((null (setq tar (nentselp "\nSelect the segment to align to: "))))
+    ((null tar))
     ((null (setq tarPts (getSegmentPoints tar)))
      (princ "\nNo segment under the pickbox."))
     ((null (setq src (nentselp "\nSelect the segment to align: "))))
@@ -253,14 +288,43 @@
     ((< (distance (hs:2d (car tarPts)) (hs:2d (cadr tarPts))) 1e-9)
      (princ "\nTarget segment has zero length."))
     (T
-     ;; Move the outermost owner (block reference) when the pick was nested
-     (setq parents (cadddr src)
-           ss      (ssadd))
-     (ssadd (cond ((and parents (listp parents)) (last parents))
-                  (parents)
-                  ((car src)))
-            ss)
+     ;; No selection: move the outermost owner (block reference) when nested
+     (if (null ss)
+       (progn
+         (setq parents (cadddr src)
+               ss      (ssadd))
+         (ssadd (cond ((and parents (listp parents)) (last parents))
+                      (parents)
+                      ((car src)))
+                ss)
+       )
+     )
      (list ss srcPts tarPts (trans (cadr src) 1 0))
+    )
+  )
+)
+
+;; Shared *error* for commands using (al:select T): clears the highlight on Esc
+(defun al:error (msg)
+  (al:highlight nil)
+  (if (not (wcmatch (strcase msg) "*CANCEL*,*QUIT*,*EXIT*"))
+    (princ (strcat "\nError: " msg))
+  )
+  (princ)
+)
+
+;; Highlights ss and remembers it in al:hl; (al:highlight nil) clears it
+(defun al:highlight (ss / i)
+  (if (= (type al:hl) 'PICKSET)
+    (repeat (setq i (sslength al:hl))
+      (if (entget (ssname al:hl (setq i (1- i))))
+        (redraw (ssname al:hl i) 4)
+      )
+    )
+  )
+  (if (setq al:hl ss)
+    (repeat (setq i (sslength ss))
+      (redraw (ssname ss (setq i (1- i))) 3)
     )
   )
 )
